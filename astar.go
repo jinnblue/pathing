@@ -11,7 +11,7 @@ package pathing
 type AStar struct {
 	frontier *minheap[astarCoord]
 	costmap  *coordMap
-	pathmap  *coordMap
+	pathmap  *pathDirMap
 }
 
 type AStarConfig struct {
@@ -39,18 +39,12 @@ func NewAStar(config AStarConfig) *AStar {
 		config.NumRows = gridMapSide
 	}
 
-	coordMapCols := gridMapSide
-	if int(config.NumCols) < coordMapCols {
-		coordMapCols = int(config.NumCols)
-	}
-	coordMapRows := gridMapSide
-	if int(config.NumRows) < coordMapRows {
-		coordMapRows = int(config.NumRows)
-	}
+	coordMapCols := int(config.NumCols)
+	coordMapRows := int(config.NumRows)
 
 	astar := &AStar{
 		frontier: newMinheap[astarCoord](32),
-		pathmap:  newCoordMap(coordMapCols, coordMapRows),
+		pathmap:  newPathDirMap(coordMapCols, coordMapRows),
 		costmap:  newCoordMap(coordMapCols, coordMapRows),
 	}
 
@@ -68,11 +62,6 @@ func (astar *AStar) BuildPath(g *Grid, from, to GridCoord, l GridLayer) BuildPat
 		return result
 	}
 
-	origin := findPathOrigin(from)
-
-	localStart := from.Sub(origin)
-	localGoal := to.Sub(origin)
-
 	frontier := astar.frontier
 	frontier.Reset()
 
@@ -82,42 +71,43 @@ func (astar *AStar) BuildPath(g *Grid, from, to GridCoord, l GridLayer) BuildPat
 	costmap := astar.costmap
 	costmap.Reset()
 
-	frontier.Push(0, astarCoord{Coord: localStart})
+	frontier.Push(0, astarCoord{Coord: from})
 
-	shortestDist := 0xffffffff
 	var fallbackCoord GridCoord
-	var fallbackCost int
+	var fallbackDist, fallbackCost int
+	fallbackSet := false
 	foundPath := false
 	for !frontier.IsEmpty() {
 		current := frontier.Pop()
+		currentKey := costmap.packCoord(current.Coord)
+		currentCost, ok := costmap.Get(currentKey)
+		if ok && current.Cost != int32(currentCost) {
+			continue
+		}
+		if !ok {
+			currentCost = uint32(current.Cost)
+		}
 
-		if current.Coord == localGoal {
-			result.Steps = constructPath(localStart, localGoal, pathmap)
+		if current.Coord == to {
+			result.Steps = constructPath(from, to, pathmap)
 			result.Finish = to
 			result.Cost = int(current.Cost)
 			foundPath = true
 			break
 		}
-		if current.Weight > gridPathMaxLen {
-			break
-		}
 
-		dist := localGoal.Dist(current.Coord)
-		if dist < shortestDist {
-			shortestDist = dist
+		dist := to.Dist(current.Coord)
+		cost := int(current.Cost)
+		if !fallbackSet || dist < fallbackDist || (dist == fallbackDist && cost < fallbackCost) {
 			fallbackCoord = current.Coord
-			fallbackCost = int(current.Cost)
+			fallbackDist = dist
+			fallbackCost = cost
+			fallbackSet = true
 		}
 
-		currentCost, _ := costmap.Get(costmap.packCoord(current.Coord))
 		for dir, offset := range &neighborOffsets {
 			next := current.Coord.Add(offset)
-			cx := uint(next.X) + uint(origin.X)
-			cy := uint(next.Y) + uint(origin.Y)
-			if cx >= g.numCols || cy >= g.numRows {
-				continue
-			}
-			nextCellCost := g.getCellCost(cx, cy, l)
+			nextCellCost := g.GetCellCost(next, l)
 			if nextCellCost == 0 {
 				continue
 			}
@@ -128,20 +118,20 @@ func (astar *AStar) BuildPath(g *Grid, from, to GridCoord, l GridLayer) BuildPat
 				continue
 			}
 			costmap.Set(k, newNextCost)
-			priority := newNextCost + uint32(localGoal.Dist(next))
+			priority := newNextCost + uint32(to.Dist(next))
 			nextWeighted := astarCoord{
 				Coord:  next,
 				Cost:   int32(newNextCost),
 				Weight: int32(current.Weight + 1),
 			}
 			frontier.Push(int(priority), nextWeighted)
-			pathmap.Set(k, uint32(dir))
+			pathmap.Set(k, Direction(dir))
 		}
 	}
 
 	if !foundPath {
-		result.Steps = constructPath(localStart, fallbackCoord, pathmap)
-		result.Finish = fallbackCoord.Add(origin)
+		result.Steps = constructPath(from, fallbackCoord, pathmap)
+		result.Finish = fallbackCoord
 		result.Cost = fallbackCost
 		result.Partial = true
 	}

@@ -2,6 +2,7 @@ package bench
 
 import (
 	"image"
+	"iter"
 	"math"
 
 	"github.com/fzipp/astar"
@@ -37,22 +38,25 @@ func (t *fzippAstarTester) nodeDist(p, q image.Point) float64 {
 	return math.Sqrt(float64(d.X*d.X + d.Y*d.Y))
 }
 
+var offsets = [...]image.Point{
+	image.Pt(0, -1), // North
+	image.Pt(1, 0),  // East
+	image.Pt(0, 1),  // South
+	image.Pt(-1, 0), // West
+}
+
 // Neighbours implements the astar.Graph[Node] interface (with Node = image.Point).
-func (g fzippGraph) Neighbours(p image.Point) []image.Point {
-	offsets := []image.Point{
-		image.Pt(0, -1), // North
-		image.Pt(1, 0),  // East
-		image.Pt(0, 1),  // South
-		image.Pt(-1, 0), // West
-	}
-	res := make([]image.Point, 0, 4)
-	for _, off := range offsets {
-		q := p.Add(off)
-		if g.isFreeAt(q) {
-			res = append(res, q)
+func (g fzippGraph) Neighbours(p image.Point) iter.Seq[image.Point] {
+	return func(yield func(image.Point) bool) {
+		for _, off := range offsets {
+			q := p.Add(off)
+			if g.isFreeAt(q) {
+				if !yield(q) {
+					return
+				}
+			}
 		}
 	}
-	return res
 }
 
 func (g fzippGraph) isFreeAt(p image.Point) bool {

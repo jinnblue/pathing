@@ -700,22 +700,20 @@ var astarTests = []pathfindTestCase{
 	{
 		name: "distlimit1",
 		path: []string{
-			"A                                                        ..........B",
+			"A                                                                  $",
 		},
-		bench:   true,
-		partial: true,
+		bench: true,
 	},
 
 	{
 		name: "distlimit2",
 		path: []string{
-			"A   ..........x......                      ...x.....x.....x....",
-			"... ..........x...... x......xxxxxxxxxx... ...x..x..x..x..x....",
-			"... xxxxxxxxxxx...... x...............x... ...x..x..x..x..x....",
-			"...                   x...............x...      .x.....x......B",
+			"A   ..........x......                      ...x.    x.    x....",
+			"... ..........x...... x......xxxxxxxxxx... ...x. x. x. x. x....",
+			"... xxxxxxxxxxx...... x...............x... ...x. x. x. x. x....",
+			"...                   x...............x...       x.    x.     $",
 		},
-		bench:   true,
-		partial: true,
+		bench: true,
 	},
 
 	{
@@ -727,7 +725,7 @@ var astarTests = []pathfindTestCase{
 			"wwwwwww..",
 			".........",
 		},
-		layer: pathing.MakeGridLayer([8]uint8{1, 0, 2, 14, 0, 0, 0, 0}),
+		layer: pathing.MakeGridLayer(pathing.LayerCost{1, 0, 2, 14, 0, 0, 0, 0}),
 		cost:  14,
 	},
 	{
@@ -739,7 +737,7 @@ var astarTests = []pathfindTestCase{
 			"wwwwwww..",
 			".........",
 		},
-		layer: pathing.MakeGridLayer([8]uint8{2, 0, 5, 17, 0, 0, 0, 0}),
+		layer: pathing.MakeGridLayer(pathing.LayerCost{2, 0, 5, 17, 0, 0, 0, 0}),
 		cost:  19,
 	},
 	{

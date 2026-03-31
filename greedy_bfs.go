@@ -17,9 +17,9 @@ var neighborOffsets = [4]GridCoord{
 // Once created, you should re-use it to build paths.
 // Do not throw the instance away after building the path once.
 type GreedyBFS struct {
-	pqueue     *priorityQueue[weightedGridCoord]
+	pqueue     *fixedPriorityQueue[weightedGridCoord]
 	coordSlice []weightedGridCoord
-	coordMap   *coordMap
+	pathmap    *pathDirMap
 }
 
 // BuildPathResult is a BuildPath() method return value.
@@ -67,18 +67,12 @@ func NewGreedyBFS(config GreedyBFSConfig) *GreedyBFS {
 		config.NumRows = gridMapSide
 	}
 
-	coordMapCols := gridMapSide
-	if int(config.NumCols) < coordMapCols {
-		coordMapCols = int(config.NumCols)
-	}
-	coordMapRows := gridMapSide
-	if int(config.NumRows) < coordMapRows {
-		coordMapRows = int(config.NumRows)
-	}
+	coordMapCols := int(config.NumCols)
+	coordMapRows := int(config.NumRows)
 
 	bfs := &GreedyBFS{
-		pqueue:     newPriorityQueue[weightedGridCoord](),
-		coordMap:   newCoordMap(coordMapCols, coordMapRows),
+		pqueue:     newFixedPriorityQueue[weightedGridCoord](),
+		pathmap:    newPathDirMap(coordMapCols, coordMapRows),
 		coordSlice: make([]weightedGridCoord, 0, 40),
 	}
 
@@ -99,24 +93,18 @@ func (bfs *GreedyBFS) BuildPath(g *Grid, from, to GridCoord, l GridLayer) BuildP
 		return result
 	}
 
-	// Find a search box origin pos. We need these to translate the local coordinates later.
-	origin := findPathOrigin(from)
-
-	// These will be in local coordinates.
-	localStart := from.Sub(origin)
-	localGoal := to.Sub(origin)
-
 	frontier := bfs.pqueue
 	frontier.Reset()
 
 	hotFrontier := bfs.coordSlice[:0]
-	hotFrontier = append(hotFrontier, weightedGridCoord{Coord: localStart})
+	hotFrontier = append(hotFrontier, weightedGridCoord{Coord: from})
 
-	pathmap := bfs.coordMap
+	pathmap := bfs.pathmap
 	pathmap.Reset()
 
-	shortestDist := 0xff
 	var fallbackCoord GridCoord
+	var fallbackDist, fallbackWeight int
+	fallbackSet := false
 	foundPath := false
 	for len(hotFrontier) != 0 || !frontier.IsEmpty() {
 		var current weightedGridCoord
@@ -127,39 +115,33 @@ func (bfs *GreedyBFS) BuildPath(g *Grid, from, to GridCoord, l GridLayer) BuildP
 			current = frontier.Pop()
 		}
 
-		if current.Coord == localGoal {
-			result.Steps = constructPath(localStart, localGoal, pathmap)
+		if current.Coord == to {
+			result.Steps = constructPath(from, to, pathmap)
 			result.Finish = to
 			result.Cost = result.Steps.Len()
 			foundPath = true
 			break
 		}
-		if current.Weight > gridPathMaxLen {
-			break
-		}
 
-		dist := localGoal.Dist(current.Coord)
-		if dist < shortestDist {
-			shortestDist = dist
+		dist := to.Dist(current.Coord)
+		if !fallbackSet || dist < fallbackDist || (dist == fallbackDist && current.Weight < fallbackWeight) {
 			fallbackCoord = current.Coord
+			fallbackDist = dist
+			fallbackWeight = current.Weight
+			fallbackSet = true
 		}
 
 		for dir, offset := range &neighborOffsets {
 			next := current.Coord.Add(offset)
-			cx := uint(next.X) + uint(origin.X)
-			cy := uint(next.Y) + uint(origin.Y)
-			if cx >= g.numCols || cy >= g.numRows {
-				continue
-			}
-			if g.getCellCost(cx, cy, l) == 0 {
+			if g.GetCellCost(next, l) == 0 {
 				continue
 			}
 			pathmapKey := pathmap.packCoord(next)
 			if pathmap.Contains(pathmapKey) {
 				continue
 			}
-			pathmap.Set(pathmapKey, uint32(dir))
-			nextDist := localGoal.Dist(next)
+			pathmap.Set(pathmapKey, Direction(dir))
+			nextDist := to.Dist(next)
 			nextWeighted := weightedGridCoord{
 				Coord: next,
 				// This is used to determine the out-of-scope coordinates.
@@ -175,8 +157,8 @@ func (bfs *GreedyBFS) BuildPath(g *Grid, from, to GridCoord, l GridLayer) BuildP
 	}
 
 	if !foundPath {
-		result.Steps = constructPath(localStart, fallbackCoord, pathmap)
-		result.Finish = fallbackCoord.Add(origin)
+		result.Steps = constructPath(from, fallbackCoord, pathmap)
+		result.Finish = fallbackCoord
 		result.Cost = result.Steps.Len()
 		result.Partial = true
 	}

@@ -8,7 +8,7 @@ import (
 )
 
 func BenchmarkGreedyBFS(b *testing.B) {
-	l := pathing.MakeGridLayer([8]uint8{1, 0, 1, 1, 0, 0, 0, 0})
+	l := pathing.MakeGridLayer(pathing.LayerCost{1, 0, 1, 1, 0, 0, 0, 0})
 	for i := range bfsTests {
 		test := bfsTests[i]
 		if !test.bench {
@@ -335,8 +335,6 @@ var bfsTests = []pathfindTestCase{
 	},
 
 	{
-		// This is unfortunate.
-		// TODO: can we adjust anything to make it better?
 		name: "depth1",
 		path: []string{
 			"........................",
@@ -345,16 +343,15 @@ var bfsTests = []pathfindTestCase{
 			".xxxxxxxxxxxxxxxxxx.x...",
 			"....................x...",
 			".x.xxxxxxxxxxxxxxxxxx...",
-			"..................A x.B.",
-			".x.xxxxxxxxxxxxxxxxxx...",
-			"....................x...",
-			".xxxxxxxxxxxxxxxxxx.x...",
-			"....................x...",
-			".xxxxxxxxxxxxxxxxxxxx...",
-			"........................",
+			"                  A.x $.",
+			" x.xxxxxxxxxxxxxxxxxx ..",
+			" ...................x ..",
+			" xxxxxxxxxxxxxxxxxx.x ..",
+			" ...................x ..",
+			" xxxxxxxxxxxxxxxxxxxx ..",
+			"                      ..",
 		},
-		partial: true,
-		bench:   true,
+		bench: true,
 	},
 
 	{
@@ -712,22 +709,20 @@ var bfsTests = []pathfindTestCase{
 	{
 		name: "distlimit1",
 		path: []string{
-			"A                                                        ..........B",
+			"A                                                                  $",
 		},
-		bench:   true,
-		partial: true,
+		bench: true,
 	},
 
 	{
 		name: "distlimit2",
 		path: []string{
-			"A.............x......   ....            ......x.....x.....x....",
-			" .............x...... x      xxxxxxxxxx ......x..x..x..x..x....",
-			" ...xxxxxxxxxxx...... x...............x ......x..x..x..x..x....",
-			"                      x...............x       ...x.....x......B",
+			"A.............x......   ....            ......x.   .x.   .x....",
+			" .............x...... x      xxxxxxxxxx ......x. x .x. x .x....",
+			" ...xxxxxxxxxxx...... x...............x ......x. x .x. x .x....",
+			"                      x...............x          x     x      $",
 		},
-		bench:   true,
-		partial: true,
+		bench: true,
 	},
 
 	{
@@ -749,12 +744,10 @@ var bfsTests = []pathfindTestCase{
 	{
 		name: "blocked2",
 		path: []string{
-			"A.............x......   ....               ...x.....x.....x....",
-			" .............x...... x      xxxxxxxxxx~~~ ...x..x..x..x..x....",
-			" ...xxxxxxxxxxx...... x...............x... ~..x..x..x..x..x....",
-			"                      x...............x...    ...x.....x......B",
+			"A.............x......   ....               ...x.   .x.   .x....",
+			" .............x...... x      xxxxxxxxxx~~~ ...x. x .x. x .x....",
+			" ...xxxxxxxxxxx...... x...............x... ~..x. x .x. x .x....",
+			"                      x...............x...       x     x      $",
 		},
-		partial: true,
-		cost:    56,
 	},
 }

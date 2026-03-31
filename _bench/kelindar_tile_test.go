@@ -36,20 +36,8 @@ func (t *kelindarTileTester) BuildPath() ([]tile.Point, gridCoord) {
 		// The simplest mapping: the tile value is its cost.
 		return uint16(v)
 	})
-	last := result[0] // The points in path are reversed
-
-	// We need to do 1 more step to complete the path.
+	last := result[len(result)-1]
 	finish := gridCoord{X: int(last.X), Y: int(last.Y)}
-	switch {
-	case finish.X < t.tc.finish.X:
-		finish.X++
-	case finish.X > t.tc.finish.X:
-		finish.X--
-	case finish.Y < t.tc.finish.Y:
-		finish.Y++
-	case finish.Y > t.tc.finish.Y:
-		finish.Y--
-	}
 
 	return result, finish
 }

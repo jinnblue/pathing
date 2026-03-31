@@ -1,10 +1,69 @@
 package pathing
 
+import (
+	"math"
+	"slices"
+	"strings"
+	"unsafe"
+)
+
+// GridLayer is a tile-to-cost mapper.
+// Every Grid cell has a tile tag value ranging from 0 to 7 (3 bits).
+// Layers are used to turn that tag value into an actual traversal cost.
+//
+// Although you can construct a GridLayer value yourself,
+// it's much easier to use a MakeGridLayer() function.
+//
+// A byte value of 0 means "the cell can't be traversed".
+// A value higher than 0 means "traversing this cell costs X points".
+// The pathfinding algorithms will respect that value when finding a solution.
+//
+// In the simplest situations just use 0 (no path) and 1 (can traverse).
+type GridLayer [2]uint64
+
+type LayerCost [8]uint8
+
+func costsMapping(costs LayerCost) uint64 {
+	return uint64(costs[0]) | uint64(costs[1])<<8 | uint64(costs[2])<<16 | uint64(costs[3])<<24 |
+		uint64(costs[4])<<32 | uint64(costs[5])<<40 | uint64(costs[6])<<48 | uint64(costs[7])<<56
+}
+
+// MakeGridLayer is a GridLayer constructor function.
+// It uses a temporary array to fill the result layer.
+//
+// The array represents a mapping from a tile tag (the key)
+// to a traversal cost (the value).
+//
+// If you want blocked (occupied) tiles to be traversible,
+// see MakeGridLayerWithBlocked constructor.
+func MakeGridLayer(costs LayerCost) GridLayer {
+	return GridLayer{costsMapping(costs), 0}
+}
+
+// MakeGridLayerWithBlocked is like MakeGridLayer, but allows
+// a custom movement cost per a blocked tile.
+// Setting a movement cost of 0 will keep that cell impossible to move through.
+func MakeGridLayerWithBlocked(costs LayerCost, blocked LayerCost) (l GridLayer) {
+	tileMapping := costsMapping(costs)
+	blockedMapping := costsMapping(blocked)
+	return GridLayer{tileMapping, blockedMapping}
+}
+
+// Get maps a given tile tag into a traversal score.
+// A tile tag is a value in [0-7] range.
+func (l GridLayer) Get(tileTag uint8) uint8 {
+	return uint8(l[0] >> (uint64(tileTag) * 8))
+}
+
+func (l GridLayer) getFast(tag uint8) uint8 {
+	return *(*uint8)(unsafe.Add(unsafe.Pointer(&l), tag))
+}
+
 type Grid struct {
+	bytes []byte
+
 	numCols uint
 	numRows uint
-
-	bytes []byte
 
 	cellWidth  int
 	cellHeight int
@@ -14,6 +73,7 @@ type Grid struct {
 	fcellHalfWidth  float64
 	fcellHalfHeight float64
 }
+
 
 // GridConfig is a NewGrid() function parameter.
 // See field comments for more details.
@@ -36,13 +96,21 @@ type GridConfig struct {
 	CellHeight uint
 
 	// DefaultTile controls the default grid fill.
-	// Only the 3 lower bits matter as a tile tag value can't exceed a value of 7.
+	// Only the 3 lower bits matter as a tile tag value can't exceed a value of 7 (0b0111).
 	// This value is a minor option, but it can be used to populate the grid
 	// with the most common tile.
 	// Although it does fill the grid in an optimized way, it's mostly a convenience option
 	// to make the initialization easier.
 	DefaultTile uint8
 }
+
+const (
+	tileMask     uint8 = 0b1111
+	tileBlockBit uint8 = 0b1000
+	tileTagMask  uint8 = 0b0111
+	tileTagShift uint  = 4
+	tileTagCount uint  = 8 / tileTagShift
+)
 
 // NewGrid creates a Grid object.
 // See GridConfig comment to learn more.
@@ -69,32 +137,16 @@ func NewGrid(config GridConfig) *Grid {
 	g.numRows = config.WorldHeight / config.CellHeight
 
 	numCells := g.numCols * g.numRows
-	numBytes := numCells / 2
-	if numCells%2 != 0 {
+	numBytes := numCells / tileTagCount
+	if numCells%tileTagCount != 0 {
 		numBytes++
 	}
 	b := make([]byte, numBytes)
 
 	defaultTileTag := config.DefaultTile
-	defaultTileTag &= 0b111
+	defaultTileTag &= tileTagMask
 	if defaultTileTag != 0 {
-		v := uint8(0)
-		switch defaultTileTag {
-		case 1:
-			v = 0b0001_0001
-		case 2:
-			v = 0b0010_0010
-		case 3:
-			v = 0b0011_0011
-		case 4:
-			v = 0b0100_0100
-		case 5:
-			v = 0b0101_0101
-		case 6:
-			v = 0b0110_0110
-		case 7:
-			v = 0b0111_0111
-		}
+		v := defaultTileTag | (defaultTileTag << tileTagShift)
 		for i := range b {
 			b[i] = v
 		}
@@ -103,6 +155,13 @@ func NewGrid(config GridConfig) *Grid {
 	g.bytes = b
 
 	return g
+}
+
+// Clone returns a deep copy of the Grid.
+func (g *Grid) Clone() *Grid {
+	clone := *g
+	clone.bytes = slices.Clone(g.bytes)
+	return &clone
 }
 
 // NumCols returns the number of columns this grid has.
@@ -121,12 +180,12 @@ func (g *Grid) NumRows() int { return int(g.numRows) }
 // accessible through some of the APIs (e.g. SetCellIsBlocked, GetCellTile2, GetCellIsBlocked)
 func (g *Grid) SetCellTile(c GridCoord, tileTag uint8) {
 	i := uint(c.Y)*g.numCols + uint(c.X)
-	byteIndex := i / 2
+	byteIndex := i / tileTagCount
 	if byteIndex < uint(len(g.bytes)) {
-		shift := (i % 2) * 4
+		shift := (i % tileTagCount) * uint(tileTagShift)
 		b := g.bytes[byteIndex]
-		b &^= 0b0111 << shift            // Clear the lower 3 data bits
-		b |= (tileTag & 0b0111) << shift // Mix it with provided bits
+		b &^= tileTagMask << shift            // Clear the four data bits
+		b |= (tileTag & tileTagMask) << shift // Mix it with provided bits
 		g.bytes[byteIndex] = b
 	}
 }
@@ -138,15 +197,15 @@ func (g *Grid) SetCellTile(c GridCoord, tileTag uint8) {
 func (g *Grid) SetCellIsBlocked(c GridCoord, blocked bool) {
 	bit := uint8(0)
 	if blocked {
-		bit = 0b1000
+		bit = tileBlockBit
 	}
 	i := uint(c.Y)*g.numCols + uint(c.X)
-	byteIndex := i / 2
+	byteIndex := i / tileTagCount
 	if byteIndex < uint(len(g.bytes)) {
-		shift := (i % 2) * 4
+		shift := (i % tileTagCount) * uint(tileTagShift)
 		b := g.bytes[byteIndex]
-		b &^= 0b1000 << shift // Clear the bit
-		b |= bit << shift     // Mix it in
+		b &^= tileBlockBit << shift // Clear the bit
+		b |= bit << shift           // Mix it in
 		g.bytes[byteIndex] = b
 	}
 }
@@ -166,9 +225,9 @@ func (g *Grid) GetCellTile(c GridCoord) uint8 {
 		return 0
 	}
 	i := y*g.numCols + x
-	byteIndex := i / 2
-	shift := (i % 2) * 4
-	return ((readByte(g.bytes, byteIndex)) >> shift) & 0b111
+	byteIndex := i / tileTagCount
+	shift := (i % tileTagCount) * uint(tileTagShift)
+	return (g.bytes[byteIndex] >> shift) & tileTagMask
 }
 
 // GetCellTile2 is like GetCellTile, but also reports
@@ -182,10 +241,10 @@ func (g *Grid) GetCellTile2(c GridCoord) (uint8, bool) {
 		return 0, false
 	}
 	i := y*g.numCols + x
-	byteIndex := i / 2
-	shift := (i % 2) * 4
-	bits := ((readByte(g.bytes, byteIndex)) >> shift)
-	return bits & 0b111, bits&0b1000 != 0
+	byteIndex := i / tileTagCount
+	shift := (i % tileTagCount) * uint(tileTagShift)
+	bits := g.bytes[byteIndex] >> shift
+	return bits & tileTagMask, bits&tileBlockBit != 0
 }
 
 // GetCellIsBlocked reports whether the given cell was marked as blocked.
@@ -199,9 +258,9 @@ func (g *Grid) GetCellIsBlocked(c GridCoord) bool {
 		return false
 	}
 	i := y*g.numCols + x
-	byteIndex := i / 2
-	shift := (i % 2) * 4
-	return ((readByte(g.bytes, byteIndex))>>shift)&0b1000 != 0
+	byteIndex := i / tileTagCount
+	shift := (i % tileTagCount) * uint(tileTagShift)
+	return (g.bytes[byteIndex]>>shift)&tileBlockBit != 0
 }
 
 // GetCellCost returns a travelling cost for a given cell as specified in the layer.
@@ -221,9 +280,9 @@ func (g *Grid) GetCellCost(c GridCoord, l GridLayer) uint8 {
 
 func (g *Grid) getCellCost(x, y uint, l GridLayer) uint8 {
 	i := y*g.numCols + x
-	byteIndex := i / 2
-	shift := (i % 2) * 4
-	tileTag := ((readByte(g.bytes, byteIndex)) >> shift) & 0b1111
+	byteIndex := i / tileTagCount
+	shift := (i % tileTagCount) * uint(tileTagShift)
+	tileTag := (g.bytes[byteIndex] >> shift) & tileMask
 	return l.getFast(tileTag)
 }
 
@@ -261,4 +320,404 @@ func (g *Grid) UnpackCoord(v uint32) GridCoord {
 	x := int(u32 & 0xffff)
 	y := int(u32 >> 16)
 	return GridCoord{X: x, Y: y}
+}
+
+const (
+	// gridPathBytes controls the max number of steps a GridPath can hold.
+	// Each byte stores 4 direction values (2 bits each), so the max path
+	// length is gridPathBytes*4. 256 bytes = 1024 steps, enough for a
+	// 512x512 grid diagonal (~724 steps).
+	gridPathBytes  = 256
+	gridPathMaxLen = gridPathBytes * 4
+
+	// gridMapSide is the default working-area size used when NumCols/NumRows
+	// are not provided to NewAStar or NewGreedyBFS.
+	gridMapSide = 114
+)
+
+// GridCoord represents a grid-local coordinate.
+// You can translate it to a world coordinate using a grid.
+//
+// If the grid cell size is 32x32, then this table can explain the mapping:
+//
+//   - pos{0, 0}   => coord{0, 0}
+//   - pos{16, 16} => coord{0, 0}
+//   - pos{20, 20} => coord{0, 0}
+//   - pos{35, 10} => coord{1, 0}
+//   - pos{50, 50} => coord{1, 1}
+//   - pos{90, 90} => coord{2, 2}
+type GridCoord struct {
+	X int
+	Y int
+}
+
+// IsZero reports whether the coord is {0, 0}.
+func (c GridCoord) IsZero() bool {
+	return c.X == 0 && c.Y == 0
+}
+
+// Add performs a + operation and returns the result coordinate.
+func (c GridCoord) Add(other GridCoord) GridCoord {
+	return GridCoord{X: c.X + other.X, Y: c.Y + other.Y}
+}
+
+// Sub performs a - operation and returns the result coordinate.
+func (c GridCoord) Sub(other GridCoord) GridCoord {
+	return GridCoord{X: c.X - other.X, Y: c.Y - other.Y}
+}
+
+func (c GridCoord) reversedMove(d Direction) GridCoord {
+	switch d {
+	case DirRight:
+		return GridCoord{X: c.X - 1, Y: c.Y}
+	case DirDown:
+		return GridCoord{X: c.X, Y: c.Y - 1}
+	case DirLeft:
+		return GridCoord{X: c.X + 1, Y: c.Y}
+	case DirUp:
+		return GridCoord{X: c.X, Y: c.Y + 1}
+	default:
+		return c
+	}
+}
+
+// Move translates the coordinate one step towards the direction.
+//
+// Note that the coordinates are not validated.
+// It's possible to get an out-of-bounds coordinate that
+// will not belong to a Grid.
+//
+//   - {2,2}.Move(DirLeft) would give {1,2}
+//   - {2,2}.Move(DirDown) would give {2,3}
+func (c GridCoord) Move(d Direction) GridCoord {
+	switch d {
+	case DirRight:
+		return GridCoord{X: c.X + 1, Y: c.Y}
+	case DirDown:
+		return GridCoord{X: c.X, Y: c.Y + 1}
+	case DirLeft:
+		return GridCoord{X: c.X - 1, Y: c.Y}
+	case DirUp:
+		return GridCoord{X: c.X, Y: c.Y - 1}
+	default:
+		return c
+	}
+}
+
+// Dist finds a Manhattan distance between the two coordinates.
+func (c GridCoord) Dist(other GridCoord) int {
+	return intabs(c.X-other.X) + intabs(c.Y-other.Y)
+}
+
+// Direction is a simple enumeration of axial movement directions.
+type Direction int
+
+const (
+	DirRight Direction = iota
+	DirDown
+	DirLeft
+	DirUp
+	DirNone // A special sentinel value
+)
+
+// Reversed returns an opposite direction.
+// For instance, DirRight would become DirLeft.
+func (d Direction) Reversed() Direction {
+	switch d {
+	case DirRight:
+		return DirLeft
+	case DirDown:
+		return DirUp
+	case DirLeft:
+		return DirRight
+	case DirUp:
+		return DirDown
+	default:
+		return DirNone
+	}
+}
+
+func (d Direction) String() string {
+	switch d {
+	case DirRight:
+		return "Right"
+	case DirDown:
+		return "Down"
+	case DirLeft:
+		return "Left"
+	case DirUp:
+		return "Up"
+	default:
+		return "None"
+	}
+}
+
+type coordMap struct {
+	elems   []coordMapElem
+	gen     uint32
+	numRows int
+	numCols int
+}
+
+type coordMapElem struct {
+	value uint32
+	gen   uint32
+}
+
+func newCoordMap(numCols, numRows int) *coordMap {
+	size := numRows * numCols
+	return &coordMap{
+		elems:   make([]coordMapElem, size),
+		gen:     1,
+		numRows: numRows,
+		numCols: numCols,
+	}
+}
+
+func (m *coordMap) Contains(k uint) bool {
+	if k < uint(len(m.elems)) {
+		return m.elems[k].gen == m.gen
+	}
+	return false
+}
+
+func (m *coordMap) Get(k uint) (uint32, bool) {
+	if k < uint(len(m.elems)) {
+		el := m.elems[k]
+		if el.gen == m.gen {
+			return el.value, true
+		}
+	}
+	return 0, false
+}
+
+func (m *coordMap) Set(k uint, v uint32) {
+	if k < uint(len(m.elems)) {
+		m.elems[k] = coordMapElem{value: v, gen: m.gen}
+	}
+}
+
+func (m *coordMap) Reset() {
+	if m.gen == math.MaxUint32 {
+		// For most users, this will never happen.
+		// But to be safe, we need to handle this correctly.
+		// m.gen will be 1, element gen will be 0.
+		m.clear()
+	} else {
+		m.gen++
+	}
+}
+
+// clear does a real array data reset.
+// m.gen becomes 1.
+// Every element gen becomes 0.
+// This is identical to the initial array state.
+//
+//go:noinline - called on a cold path, therefore it should not be inlined.
+func (m *coordMap) clear() {
+	m.gen = 1
+	clear(m.elems)
+}
+
+func (s *coordMap) packCoord(c GridCoord) uint {
+	return uint((c.Y * s.numCols) + c.X)
+}
+
+type pathDirMap struct {
+	dirs    []byte
+	gen     []uint32
+	current uint32
+	numRows int
+	numCols int
+}
+
+func newPathDirMap(numCols, numRows int) *pathDirMap {
+	size := numRows * numCols
+	return &pathDirMap{
+		dirs:    make([]byte, size),
+		gen:     make([]uint32, size),
+		current: 1,
+		numRows: numRows,
+		numCols: numCols,
+	}
+}
+
+func (m *pathDirMap) packCoord(c GridCoord) uint {
+	return uint((c.Y * m.numCols) + c.X)
+}
+
+func (m *pathDirMap) Contains(k uint) bool {
+	if k < uint(len(m.gen)) {
+		return m.gen[k] == m.current
+	}
+	return false
+}
+
+func (m *pathDirMap) Get(k uint) (Direction, bool) {
+	if k < uint(len(m.gen)) && m.gen[k] == m.current {
+		return Direction(m.dirs[k]), true
+	}
+	return DirNone, false
+}
+
+func (m *pathDirMap) Set(k uint, d Direction) {
+	if k < uint(len(m.gen)) {
+		m.gen[k] = m.current
+		m.dirs[k] = byte(d)
+	}
+}
+
+func (m *pathDirMap) Reset() {
+	if m.current == math.MaxUint32 {
+		m.clear()
+	} else {
+		m.current++
+	}
+}
+
+//go:noinline - called on a cold path, therefore it should not be inlined.
+func (m *pathDirMap) clear() {
+	m.current = 1
+	clear(m.gen)
+	clear(m.dirs)
+}
+
+func intabs(x int) int {
+	if x < 0 {
+		return -x
+	}
+	return x
+}
+
+const (
+	dirShift uint16 = 2
+	dirCount uint16 = 8 / dirShift
+	dirMask  byte   = 0b11
+)
+
+// GridPath represents a constructed path from point A to point B.
+//
+// Instead of storing the actual coordinates, it stores deltas in a form of step directions.
+//
+// You get from point A to point B by taking the steps into the directions
+// specified by the path.
+// The path object is essentialy an iterator.
+//
+// The path can be copied by simply assigning it, it has a value semantics.
+// You want to pass it around as a value 90% of time,
+// but if you want some function to be able to affect the iterator state,
+// pass it by the pointer.
+type GridPath struct {
+	bytes [gridPathBytes]byte
+	len   uint16
+	pos   uint16
+}
+
+// MakeGridPath construct a path from the given set of steps.
+func MakeGridPath(steps ...Direction) GridPath {
+	var result GridPath
+	for i := len(steps) - 1; i >= 0; i-- {
+		result.push(steps[i])
+	}
+	result.Rewind()
+	return result
+}
+
+// String returns a debug-print version of the path.
+// It's not intended to be used a fast path-to-string method.
+func (p GridPath) String() string {
+	parts := make([]string, 0, p.len)
+	prevPos := p.pos // Restore the pos later
+	p.Rewind()
+	for p.HasNext() {
+		parts = append(parts, p.Next().String())
+	}
+	p.pos = prevPos
+	return "{" + strings.Join(parts, ",") + "}"
+}
+
+// Len returns the path length.
+// It's not affected by the iterator state; the result is always
+// a total path length regardless of the progress.
+func (p *GridPath) Len() int {
+	return int(p.len)
+}
+
+// HasNext reports whether there are more steps inside this path.
+// Use Next() to extract the next path segment if there are any.
+func (p *GridPath) HasNext() bool {
+	return p.pos != 0
+}
+
+// Rewind resets the iterator and allows you to traverse it again.
+func (p *GridPath) Rewind() {
+	p.pos = p.len
+}
+
+// Peek returns the next path step without advancing the iterator.
+func (p *GridPath) Peek() Direction {
+	return p.get(p.pos - 1)
+}
+
+// Next returns the next path step and advances the iterator.
+func (p *GridPath) Next() Direction {
+	d := p.Peek()
+	p.pos--
+	return d
+}
+
+// Skip consumes n next path steps.
+func (p *GridPath) Skip(n uint16) {
+	p.pos -= n
+}
+
+// Peek2 is like Peek(), but it returns two next steps instead of just one.
+func (p *GridPath) Peek2() (Direction, Direction) {
+	// If p.pos is 1, p.pos-2 overflows to 255.
+	// byteIndex will not be inside len(p.bytes), so
+	// p.get(p.pos-2) will return DirNone as it should.
+	// No need to check for that condition here explicitely.
+	return p.get(p.pos - 1), p.get(p.pos - 2)
+}
+
+func (p *GridPath) push(dir Direction) {
+	i := p.pos
+	p.pos++
+	p.len++
+	byteIndex := i / dirCount
+	bitShift := byte((i % dirCount) * dirShift)
+	if int(byteIndex) < len(p.bytes) {
+		b := p.bytes[byteIndex]
+		b &^= dirMask << bitShift
+		b |= (byte(dir) & dirMask) << bitShift
+		p.bytes[byteIndex] = b
+	}
+}
+
+func (p *GridPath) get(i uint16) Direction {
+	byteIndex := i / dirCount
+	bitShift := byte((i % dirCount) * dirShift)
+	if int(byteIndex) < len(p.bytes) {
+		return Direction((p.bytes[byteIndex] >> bitShift) & dirMask)
+	}
+	return DirNone
+}
+
+func constructPath(from, to GridCoord, pathmap *pathDirMap) GridPath {
+	// We walk from the finish point towards the start.
+	// The directions are pushed in that order and would lead
+	// to a reversed path, but since GridPath does its iteration
+	// in reversed order itself, we don't need to do any
+	// post-build reversal here.
+	var result GridPath
+	pos := to
+	for {
+		d, _ := pathmap.Get(pathmap.packCoord(pos))
+		if pos == from {
+			break
+		}
+		result.push(d)
+		pos = pos.reversedMove(d)
+	}
+	return result
 }
