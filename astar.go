@@ -12,6 +12,7 @@ type AStar struct {
 	frontier *minheap[astarCoord]
 	costmap  *coordMap
 	pathmap  *pathDirMap
+	diagonal bool
 }
 
 type AStarConfig struct {
@@ -22,6 +23,10 @@ type AStarConfig struct {
 	// if the grids you're going operate on are small.
 	NumCols uint
 	NumRows uint
+
+	// Diagonal enables 8-directional (diagonal) movement.
+	// When false (the default), only the 4 cardinal directions are used.
+	Diagonal bool
 }
 
 type astarCoord struct {
@@ -46,6 +51,7 @@ func NewAStar(config AStarConfig) *AStar {
 		frontier: newMinheap[astarCoord](32),
 		pathmap:  newPathDirMap(coordMapCols, coordMapRows),
 		costmap:  newCoordMap(coordMapCols, coordMapRows),
+		diagonal: config.Diagonal,
 	}
 
 	return astar
@@ -73,6 +79,16 @@ func (astar *AStar) BuildPath(g *Grid, from, to GridCoord, l GridLayer) BuildPat
 
 	frontier.Push(0, astarCoord{Coord: from})
 
+	offsets := neighborOffsets[:4]
+	if astar.diagonal {
+		offsets = neighborOffsets[:]
+	}
+
+	distFunc := GridCoord.Dist
+	if astar.diagonal {
+		distFunc = chebyshevDist
+	}
+
 	var fallbackCoord GridCoord
 	var fallbackDist, fallbackCost int
 	fallbackSet := false
@@ -96,7 +112,7 @@ func (astar *AStar) BuildPath(g *Grid, from, to GridCoord, l GridLayer) BuildPat
 			break
 		}
 
-		dist := to.Dist(current.Coord)
+		dist := distFunc(to, current.Coord)
 		cost := int(current.Cost)
 		if !fallbackSet || dist < fallbackDist || (dist == fallbackDist && cost < fallbackCost) {
 			fallbackCoord = current.Coord
@@ -105,7 +121,7 @@ func (astar *AStar) BuildPath(g *Grid, from, to GridCoord, l GridLayer) BuildPat
 			fallbackSet = true
 		}
 
-		for dir, offset := range &neighborOffsets {
+		for dir, offset := range offsets {
 			next := current.Coord.Add(offset)
 			nextCellCost := g.GetCellCost(next, l)
 			if nextCellCost == 0 {
@@ -118,7 +134,7 @@ func (astar *AStar) BuildPath(g *Grid, from, to GridCoord, l GridLayer) BuildPat
 				continue
 			}
 			costmap.Set(k, newNextCost)
-			priority := newNextCost + uint32(to.Dist(next))
+			priority := newNextCost + uint32(distFunc(to, next))
 			nextWeighted := astarCoord{
 				Coord:  next,
 				Cost:   int32(newNextCost),

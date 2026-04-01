@@ -1,12 +1,5 @@
 package pathing
 
-var neighborOffsets = [4]GridCoord{
-	{X: 1},
-	{Y: 1},
-	{X: -1},
-	{Y: -1},
-}
-
 // GreedyBFS implements a greedy best-first search pathfinding algorithm.
 // You must use NewGreedyBFS() function to obtain an instance of this type.
 //
@@ -20,27 +13,7 @@ type GreedyBFS struct {
 	pqueue     *fixedPriorityQueue[weightedGridCoord]
 	coordSlice []weightedGridCoord
 	pathmap    *pathDirMap
-}
-
-// BuildPathResult is a BuildPath() method return value.
-type BuildPathResult struct {
-	// Steps is an actual path that was constructed.
-	Steps GridPath
-
-	// Finish is where the constructed path ends.
-	// It's mostly needed in case of a partial result,
-	// since you can build another path from this coord right away.
-	Finish GridCoord
-
-	// Cost is a path final movement cost.
-	// The BFS will set this value to a Manhattan distance.
-	// The A* will assign the actual computed cost.
-	Cost int
-
-	// Whether this is a partial path result.
-	// This happens if the destination can't be reached
-	// or if it's too far away.
-	Partial bool
+	diagonal   bool
 }
 
 type weightedGridCoord struct {
@@ -56,6 +29,10 @@ type GreedyBFSConfig struct {
 	// if the grids you're going operate on are small.
 	NumCols uint
 	NumRows uint
+
+	// Diagonal enables 8-directional (diagonal) movement.
+	// When false (the default), only the 4 cardinal directions are used.
+	Diagonal bool
 }
 
 // NewGreedyBFS creates a ready-to-use GreedyBFS object.
@@ -74,6 +51,7 @@ func NewGreedyBFS(config GreedyBFSConfig) *GreedyBFS {
 		pqueue:     newFixedPriorityQueue[weightedGridCoord](),
 		pathmap:    newPathDirMap(coordMapCols, coordMapRows),
 		coordSlice: make([]weightedGridCoord, 0, 40),
+		diagonal:   config.Diagonal,
 	}
 
 	return bfs
@@ -102,6 +80,16 @@ func (bfs *GreedyBFS) BuildPath(g *Grid, from, to GridCoord, l GridLayer) BuildP
 	pathmap := bfs.pathmap
 	pathmap.Reset()
 
+	offsets := neighborOffsets[:4]
+	if bfs.diagonal {
+		offsets = neighborOffsets[:]
+	}
+
+	distFunc := GridCoord.Dist
+	if bfs.diagonal {
+		distFunc = chebyshevDist
+	}
+
 	var fallbackCoord GridCoord
 	var fallbackDist, fallbackWeight int
 	fallbackSet := false
@@ -123,7 +111,7 @@ func (bfs *GreedyBFS) BuildPath(g *Grid, from, to GridCoord, l GridLayer) BuildP
 			break
 		}
 
-		dist := to.Dist(current.Coord)
+		dist := distFunc(to, current.Coord)
 		if !fallbackSet || dist < fallbackDist || (dist == fallbackDist && current.Weight < fallbackWeight) {
 			fallbackCoord = current.Coord
 			fallbackDist = dist
@@ -131,7 +119,7 @@ func (bfs *GreedyBFS) BuildPath(g *Grid, from, to GridCoord, l GridLayer) BuildP
 			fallbackSet = true
 		}
 
-		for dir, offset := range &neighborOffsets {
+		for dir, offset := range offsets {
 			next := current.Coord.Add(offset)
 			if g.GetCellCost(next, l) == 0 {
 				continue
@@ -141,7 +129,7 @@ func (bfs *GreedyBFS) BuildPath(g *Grid, from, to GridCoord, l GridLayer) BuildP
 				continue
 			}
 			pathmap.Set(pathmapKey, Direction(dir))
-			nextDist := to.Dist(next)
+			nextDist := distFunc(to, next)
 			nextWeighted := weightedGridCoord{
 				Coord: next,
 				// This is used to determine the out-of-scope coordinates.

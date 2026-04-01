@@ -74,7 +74,6 @@ type Grid struct {
 	fcellHalfHeight float64
 }
 
-
 // GridConfig is a NewGrid() function parameter.
 // See field comments for more details.
 type GridConfig struct {
@@ -324,11 +323,11 @@ func (g *Grid) UnpackCoord(v uint32) GridCoord {
 
 const (
 	// gridPathBytes controls the max number of steps a GridPath can hold.
-	// Each byte stores 4 direction values (2 bits each), so the max path
-	// length is gridPathBytes*4. 256 bytes = 1024 steps, enough for a
-	// 512x512 grid diagonal (~724 steps).
-	gridPathBytes  = 256
-	gridPathMaxLen = gridPathBytes * 4
+	// Each byte stores 2 direction values (4 bits each), so the max path
+	// length is gridPathBytes*2. 512 bytes = 1024 steps, enough for a
+	// 512x512 grid in both 4-directional and 8-directional (diagonal) modes.
+	gridPathBytes  = 512
+	gridPathMaxLen = gridPathBytes * 2
 
 	// gridMapSide is the default working-area size used when NumCols/NumRows
 	// are not provided to NewAStar or NewGreedyBFS.
@@ -376,6 +375,14 @@ func (c GridCoord) reversedMove(d Direction) GridCoord {
 		return GridCoord{X: c.X + 1, Y: c.Y}
 	case DirUp:
 		return GridCoord{X: c.X, Y: c.Y + 1}
+	case DirDownRight:
+		return GridCoord{X: c.X - 1, Y: c.Y - 1}
+	case DirDownLeft:
+		return GridCoord{X: c.X + 1, Y: c.Y - 1}
+	case DirUpLeft:
+		return GridCoord{X: c.X + 1, Y: c.Y + 1}
+	case DirUpRight:
+		return GridCoord{X: c.X - 1, Y: c.Y + 1}
 	default:
 		return c
 	}
@@ -389,6 +396,7 @@ func (c GridCoord) reversedMove(d Direction) GridCoord {
 //
 //   - {2,2}.Move(DirLeft) would give {1,2}
 //   - {2,2}.Move(DirDown) would give {2,3}
+//   - {2,2}.Move(DirDownRight) would give {3,3}
 func (c GridCoord) Move(d Direction) GridCoord {
 	switch d {
 	case DirRight:
@@ -399,6 +407,14 @@ func (c GridCoord) Move(d Direction) GridCoord {
 		return GridCoord{X: c.X - 1, Y: c.Y}
 	case DirUp:
 		return GridCoord{X: c.X, Y: c.Y - 1}
+	case DirDownRight:
+		return GridCoord{X: c.X + 1, Y: c.Y + 1}
+	case DirDownLeft:
+		return GridCoord{X: c.X - 1, Y: c.Y + 1}
+	case DirUpLeft:
+		return GridCoord{X: c.X - 1, Y: c.Y - 1}
+	case DirUpRight:
+		return GridCoord{X: c.X + 1, Y: c.Y - 1}
 	default:
 		return c
 	}
@@ -409,7 +425,7 @@ func (c GridCoord) Dist(other GridCoord) int {
 	return intabs(c.X-other.X) + intabs(c.Y-other.Y)
 }
 
-// Direction is a simple enumeration of axial movement directions.
+// Direction is a simple enumeration of axial and diagonal movement directions.
 type Direction int
 
 const (
@@ -417,7 +433,11 @@ const (
 	DirDown
 	DirLeft
 	DirUp
-	DirNone // A special sentinel value
+	DirDownRight // diagonal: +X, +Y
+	DirDownLeft  // diagonal: -X, +Y
+	DirUpLeft    // diagonal: -X, -Y
+	DirUpRight   // diagonal: +X, -Y
+	DirNone      // A special sentinel value
 )
 
 // Reversed returns an opposite direction.
@@ -432,6 +452,14 @@ func (d Direction) Reversed() Direction {
 		return DirRight
 	case DirUp:
 		return DirDown
+	case DirDownRight:
+		return DirUpLeft
+	case DirDownLeft:
+		return DirUpRight
+	case DirUpLeft:
+		return DirDownRight
+	case DirUpRight:
+		return DirDownLeft
 	default:
 		return DirNone
 	}
@@ -447,6 +475,14 @@ func (d Direction) String() string {
 		return "Left"
 	case DirUp:
 		return "Up"
+	case DirDownRight:
+		return "DownRight"
+	case DirDownLeft:
+		return "DownLeft"
+	case DirUpLeft:
+		return "UpLeft"
+	case DirUpRight:
+		return "UpRight"
 	default:
 		return "None"
 	}
@@ -589,11 +625,36 @@ func intabs(x int) int {
 	return x
 }
 
+// chebyshevDist returns the Chebyshev distance between two grid coordinates.
+// It is an admissible heuristic for 8-directional pathfinding with equal step costs.
+func chebyshevDist(a, b GridCoord) int {
+	dx := intabs(a.X - b.X)
+	dy := intabs(a.Y - b.Y)
+	if dx > dy {
+		return dx
+	}
+	return dy
+}
+
 const (
-	dirShift uint16 = 2
-	dirCount uint16 = 8 / dirShift
-	dirMask  byte   = 0b11
+	dirShift uint16 = 4
+	dirCount uint16 = 8 / dirShift // 2 directions per byte
+	dirMask  byte   = 0b1111
 )
+
+// neighborOffsets lists the 8 movement directions in index order matching the
+// Direction constants (DirRight=0 … DirUpRight=7). The first 4 entries are the
+// cardinal (axial) directions; all 8 are used when diagonal movement is enabled.
+var neighborOffsets = [8]GridCoord{
+	{X: 1},         // DirRight
+	{Y: 1},         // DirDown
+	{X: -1},        // DirLeft
+	{Y: -1},        // DirUp
+	{X: 1, Y: 1},   // DirDownRight
+	{X: -1, Y: 1},  // DirDownLeft
+	{X: -1, Y: -1}, // DirUpLeft
+	{X: 1, Y: -1},  // DirUpRight
+}
 
 // GridPath represents a constructed path from point A to point B.
 //
@@ -720,4 +781,25 @@ func constructPath(from, to GridCoord, pathmap *pathDirMap) GridPath {
 		pos = pos.reversedMove(d)
 	}
 	return result
+}
+
+// BuildPathResult is a BuildPath() method return value.
+type BuildPathResult struct {
+	// Steps is an actual path that was constructed.
+	Steps GridPath
+
+	// Finish is where the constructed path ends.
+	// It's mostly needed in case of a partial result,
+	// since you can build another path from this coord right away.
+	Finish GridCoord
+
+	// Cost is a path final movement cost.
+	// For GreedyBFS this equals the path step count.
+	// For AStar this is the accumulated tile-layer cost.
+	Cost int
+
+	// Whether this is a partial path result.
+	// This happens if the destination can't be reached
+	// or if it's too far away.
+	Partial bool
 }
