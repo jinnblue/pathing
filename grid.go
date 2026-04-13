@@ -420,9 +420,23 @@ func (c GridCoord) Move(d Direction) GridCoord {
 	}
 }
 
-// Dist finds a Manhattan distance between the two coordinates.
-func (c GridCoord) Dist(other GridCoord) int {
+// DistManhattan finds a Manhattan distance between the two coordinates.
+func (c GridCoord) DistManhattan(other GridCoord) int {
 	return intabs(c.X-other.X) + intabs(c.Y-other.Y)
+}
+
+// DistOctile finds a Octile distance between the two coordinates.
+// If diagonal movement equal linear movement, should use Chebyshev distance.
+func (c GridCoord) DistOctile(other GridCoord) int {
+	dx := c.X - other.X
+	dy := c.Y - other.Y
+	if dx < 0 {
+		dx = -dx
+	}
+	if dy < 0 {
+		dy = -dy
+	}
+	return 4*min(dx, dy) + 10*max(dx, dy)
 }
 
 // Direction is a simple enumeration of axial and diagonal movement directions.
@@ -625,35 +639,36 @@ func intabs(x int) int {
 	return x
 }
 
-// chebyshevDist returns the Chebyshev distance between two grid coordinates.
-// It is an admissible heuristic for 8-directional pathfinding with equal step costs.
-func chebyshevDist(a, b GridCoord) int {
-	dx := intabs(a.X - b.X)
-	dy := intabs(a.Y - b.Y)
-	if dx > dy {
-		return dx
-	}
-	return dy
-}
-
 const (
 	dirShift uint16 = 4
 	dirCount uint16 = 8 / dirShift // 2 directions per byte
 	dirMask  byte   = 0b1111
 )
 
-// neighborOffsets lists the 8 movement directions in index order matching the
-// Direction constants (DirRight=0 … DirUpRight=7). The first 4 entries are the
-// cardinal (axial) directions; all 8 are used when diagonal movement is enabled.
-var neighborOffsets = [8]GridCoord{
-	{X: 1},         // DirRight
-	{Y: 1},         // DirDown
-	{X: -1},        // DirLeft
-	{Y: -1},        // DirUp
-	{X: 1, Y: 1},   // DirDownRight
-	{X: -1, Y: 1},  // DirDownLeft
-	{X: -1, Y: -1}, // DirUpLeft
-	{X: 1, Y: -1},  // DirUpRight
+type neighborGrid struct {
+	Direction
+	GridCoord
+}
+
+// neighborCardinal lists the 4 cardinal directions in raster-scan order (Up, Left, Right, Down).
+var neighborCardinal = [...]neighborGrid{
+	{DirUp, GridCoord{X: 0, Y: -1}},
+	{DirLeft, GridCoord{X: -1, Y: 0}},
+	{DirRight, GridCoord{X: 1, Y: 0}},
+	{DirDown, GridCoord{X: 0, Y: 1}},
+}
+
+// neighborDiagonal lists all 8 movement directions in cache-friendly raster-scan order
+// (top-to-bottom, left-to-right). Grid cells are laid out row-major.
+var neighborDiagonal = [...]neighborGrid{
+	{DirUpLeft, GridCoord{X: -1, Y: -1}},
+	{DirUp, GridCoord{X: 0, Y: -1}},
+	{DirUpRight, GridCoord{X: 1, Y: -1}},
+	{DirLeft, GridCoord{X: -1, Y: 0}},
+	{DirRight, GridCoord{X: 1, Y: 0}},
+	{DirDownLeft, GridCoord{X: -1, Y: 1}},
+	{DirDown, GridCoord{X: 0, Y: 1}},
+	{DirDownRight, GridCoord{X: 1, Y: 1}},
 }
 
 // GridPath represents a constructed path from point A to point B.

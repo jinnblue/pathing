@@ -76,29 +76,30 @@ func (bfs *GreedyBFS) BuildPath(g *Grid, from, to GridCoord, l GridLayer) BuildP
 
 	hotFrontier := bfs.coordSlice[:0]
 	hotFrontier = append(hotFrontier, weightedGridCoord{Coord: from})
+	hotIdx := 0
 
 	pathmap := bfs.pathmap
 	pathmap.Reset()
 
-	offsets := neighborOffsets[:4]
+	neighbors := neighborCardinal[:]
 	if bfs.diagonal {
-		offsets = neighborOffsets[:]
+		neighbors = neighborDiagonal[:]
 	}
 
-	distFunc := GridCoord.Dist
+	distFunc := GridCoord.DistManhattan
 	if bfs.diagonal {
-		distFunc = chebyshevDist
+		distFunc = GridCoord.DistOctile
 	}
 
 	var fallbackCoord GridCoord
 	var fallbackDist, fallbackWeight int
 	fallbackSet := false
 	foundPath := false
-	for len(hotFrontier) != 0 || !frontier.IsEmpty() {
+	for hotIdx < len(hotFrontier) || !frontier.IsEmpty() {
 		var current weightedGridCoord
-		if len(hotFrontier) != 0 {
-			current = hotFrontier[len(hotFrontier)-1]
-			hotFrontier = hotFrontier[:len(hotFrontier)-1]
+		if hotIdx < len(hotFrontier) {
+			current = hotFrontier[hotIdx]
+			hotIdx++
 		} else {
 			current = frontier.Pop()
 		}
@@ -119,8 +120,8 @@ func (bfs *GreedyBFS) BuildPath(g *Grid, from, to GridCoord, l GridLayer) BuildP
 			fallbackSet = true
 		}
 
-		for dir, offset := range offsets {
-			next := current.Coord.Add(offset)
+		for _, nb := range neighbors {
+			next := current.Coord.Add(nb.GridCoord)
 			if g.GetCellCost(next, l) == 0 {
 				continue
 			}
@@ -128,7 +129,7 @@ func (bfs *GreedyBFS) BuildPath(g *Grid, from, to GridCoord, l GridLayer) BuildP
 			if pathmap.Contains(pathmapKey) {
 				continue
 			}
-			pathmap.Set(pathmapKey, Direction(dir))
+			pathmap.Set(pathmapKey, nb.Direction)
 			nextDist := distFunc(to, next)
 			nextWeighted := weightedGridCoord{
 				Coord: next,

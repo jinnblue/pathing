@@ -240,11 +240,11 @@ func TestFixedPriorityQueueClampsPriorityAboveLastBucket(t *testing.T) {
 	if got := q.Pop(); got != 3 {
 		t.Fatalf("first pop = %d, want 3", got)
 	}
-	if got := q.Pop(); got != 64 {
-		t.Fatalf("second pop = %d, want 64", got)
-	}
 	if got := q.Pop(); got != 128 {
-		t.Fatalf("third pop = %d, want 128", got)
+		t.Fatalf("second pop = %d, want 128", got)
+	}
+	if got := q.Pop(); got != 64 {
+		t.Fatalf("third pop = %d, want 64", got)
 	}
 	if !q.IsEmpty() {
 		t.Fatal("queue should be empty")

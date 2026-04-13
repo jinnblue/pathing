@@ -79,14 +79,14 @@ func (astar *AStar) BuildPath(g *Grid, from, to GridCoord, l GridLayer) BuildPat
 
 	frontier.Push(0, astarCoord{Coord: from})
 
-	offsets := neighborOffsets[:4]
+	neighbors := neighborCardinal[:]
 	if astar.diagonal {
-		offsets = neighborOffsets[:]
+		neighbors = neighborDiagonal[:]
 	}
 
-	distFunc := GridCoord.Dist
+	distFunc := GridCoord.DistManhattan
 	if astar.diagonal {
-		distFunc = chebyshevDist
+		distFunc = GridCoord.DistOctile
 	}
 
 	var fallbackCoord GridCoord
@@ -121,8 +121,8 @@ func (astar *AStar) BuildPath(g *Grid, from, to GridCoord, l GridLayer) BuildPat
 			fallbackSet = true
 		}
 
-		for dir, offset := range offsets {
-			next := current.Coord.Add(offset)
+		for _, nb := range neighbors {
+			next := current.Coord.Add(nb.GridCoord)
 			nextCellCost := g.GetCellCost(next, l)
 			if nextCellCost == 0 {
 				continue
@@ -141,7 +141,7 @@ func (astar *AStar) BuildPath(g *Grid, from, to GridCoord, l GridLayer) BuildPat
 				Weight: int32(current.Weight + 1),
 			}
 			frontier.Push(int(priority), nextWeighted)
-			pathmap.Set(k, Direction(dir))
+			pathmap.Set(k, nb.Direction)
 		}
 	}
 

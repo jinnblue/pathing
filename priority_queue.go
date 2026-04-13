@@ -92,6 +92,7 @@ func (q *minheap[T]) Pop() T {
 // fixedPriorityQueue is a limit priority(64) queue based on a fixed hash table.
 type fixedPriorityQueue[T any] struct {
 	buckets [64][]T
+	heads   [64]int // read index per bucket for FIFO ordering
 	mask    uint64
 }
 
@@ -119,6 +120,7 @@ func (q *fixedPriorityQueue[T]) Reset() {
 	for mask != 0 {
 		if i < uint(len(buckets)) {
 			buckets[i] = buckets[i][:0]
+			q.heads[i] = 0
 		}
 		mask >>= 1
 		i++
@@ -152,11 +154,16 @@ func (q *fixedPriorityQueue[T]) Pop() (x T) {
 	// TrailingZeros64 returns 3, which is the index of the lowest priority.
 	i := uint(bits.TrailingZeros64(q.mask))
 	if i < uint(len(buckets)) {
-		last := len(buckets[i]) - 1
-		e := buckets[i][last]
-		buckets[i] = buckets[i][:last]
-		if len(buckets[i]) == 0 {
+		head := q.heads[i]
+		e := buckets[i][head]
+		head++
+		if head >= len(buckets[i]) {
+			// Bucket fully consumed; reslice and reset head.
+			buckets[i] = buckets[i][:0]
+			q.heads[i] = 0
 			q.mask &^= 1 << i
+		} else {
+			q.heads[i] = head
 		}
 		return e
 	}

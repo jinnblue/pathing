@@ -226,8 +226,8 @@ func TestPartialFallbackNearGoal(t *testing.T) {
 				if pos != result.Finish {
 					t.Fatalf("path end mismatch: finish=%v, path ends at %v", result.Finish, pos)
 				}
-				if parsed.dest.Dist(result.Finish) != 1 {
-					t.Fatalf("fallback ended at unexpected goal distance: have %d, want 1", parsed.dest.Dist(result.Finish))
+				if parsed.dest.DistManhattan(result.Finish) != 1 {
+					t.Fatalf("fallback ended at unexpected goal distance: have %d, want 1", parsed.dest.DistManhattan(result.Finish))
 				}
 			})
 		}
