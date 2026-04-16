@@ -1,10 +1,35 @@
 package pathing_test
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/quasilyte/pathing"
 )
+
+func BenchmarkAstar(b *testing.B) {
+	l := pathing.MakeGridLayer(pathing.LayerCost{1, 0, 1, 1, 0, 0, 0, 0})
+	for i := range astarTests {
+		test := astarTests[i]
+		if !test.bench {
+			continue
+		}
+		numCols := len(test.path[0])
+		numRows := len(test.path)
+		b.Run(fmt.Sprintf("%s_%dx%d", test.name, numCols, numRows), func(b *testing.B) {
+			parseResult := testParseGrid(b, test.path)
+			astar := pathing.NewAStar(pathing.AStarConfig{
+				NumCols:  uint(parseResult.numCols),
+				NumRows:  uint(parseResult.numRows),
+				Diagonal: true,
+			})
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				astar.BuildPath(parseResult.grid, parseResult.start, parseResult.dest, l)
+			}
+		})
+	}
+}
 
 func TestAStar(t *testing.T) {
 	for i := range astarTests {

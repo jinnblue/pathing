@@ -49,6 +49,15 @@ func BenchmarkMovingAIBFS(b *testing.B) {
 	b.Run("long", func(b *testing.B) { runMovingAIBFS(b, htScenSlice(2*t, n)) })
 }
 
+// BenchmarkMovingAIJPS benchmarks JPS on the same map and scenario sub-sets.
+func BenchmarkMovingAIJPS(b *testing.B) {
+	n := len(htScenarios)
+	t := n / 3
+	b.Run("short", func(b *testing.B) { runMovingAIJPS(b, htScenSlice(0, t)) })
+	b.Run("medium", func(b *testing.B) { runMovingAIJPS(b, htScenSlice(t, 2*t)) })
+	b.Run("long", func(b *testing.B) { runMovingAIJPS(b, htScenSlice(2*t, n)) })
+}
+
 // movingAIScenario holds one start/goal pair from a .scen file.
 type movingAIScenario struct {
 	startX, startY int
@@ -224,6 +233,30 @@ func runMovingAIBFS(b *testing.B, scenarios []movingAIScenario) {
 		from := pathing.GridCoord{X: sc.startX, Y: sc.startY}
 		to := pathing.GridCoord{X: sc.goalX, Y: sc.goalY}
 		ret := bfs.BuildPath(htGrid, from, to, pathingLayer)
+		if ret.Finish != to {
+			b.Fail()
+		}
+		costs += ret.Cost
+		baseCosts += sc.cost
+	}
+	b.ReportMetric(float64(costs)/float64(b.N), "costs/op")
+	b.ReportMetric(baseCosts/float64(b.N), "base_costs/op")
+}
+
+func runMovingAIJPS(b *testing.B, scenarios []movingAIScenario) {
+	b.Helper()
+	jps := pathing.NewJPS(pathing.JPSConfig{
+		NumCols: uint(htGridCols),
+		NumRows: uint(htGridRows),
+	})
+	b.ResetTimer()
+	costs := 0
+	baseCosts := float64(0)
+	for i := 0; i < b.N; i++ {
+		sc := scenarios[i%len(scenarios)]
+		from := pathing.GridCoord{X: sc.startX, Y: sc.startY}
+		to := pathing.GridCoord{X: sc.goalX, Y: sc.goalY}
+		ret := jps.BuildPath(htGrid, from, to, pathingLayer)
 		if ret.Finish != to {
 			b.Fail()
 		}

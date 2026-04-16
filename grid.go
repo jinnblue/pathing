@@ -65,6 +65,10 @@ type Grid struct {
 	numCols uint
 	numRows uint
 
+	// mutGen is incremented on every cell mutation (SetCellTile, SetCellIsBlocked).
+	// Used by JPS to detect when the cached bitgrid must be invalidated.
+	mutGen uint32
+
 	cellWidth  int
 	cellHeight int
 
@@ -186,6 +190,7 @@ func (g *Grid) SetCellTile(c GridCoord, tileTag uint8) {
 		b &^= tileTagMask << shift            // Clear the four data bits
 		b |= (tileTag & tileTagMask) << shift // Mix it with provided bits
 		g.bytes[byteIndex] = b
+		g.mutGen++
 	}
 }
 
@@ -206,6 +211,7 @@ func (g *Grid) SetCellIsBlocked(c GridCoord, blocked bool) {
 		b &^= tileBlockBit << shift // Clear the bit
 		b |= bit << shift           // Mix it in
 		g.bytes[byteIndex] = b
+		g.mutGen++
 	}
 }
 
@@ -365,27 +371,22 @@ func (c GridCoord) Sub(other GridCoord) GridCoord {
 	return GridCoord{X: c.X - other.X, Y: c.Y - other.Y}
 }
 
+// dirOffset maps Direction to (dx, dy) offsets.
+var dirOffset = [...]GridCoord{
+	{-1, -1}, // DirUpLeft=0
+	{0, -1},  // DirUp=1
+	{1, -1},  // DirUpRight=2
+	{-1, 0},  // DirLeft=3
+	{1, 0},   // DirRight=4
+	{-1, 1},  // DirDownLeft=5
+	{0, 1},   // DirDown=6
+	{1, 1},   // DirDownRight=7
+	{0, 0},   // DirNone=8
+}
+
 func (c GridCoord) reversedMove(d Direction) GridCoord {
-	switch d {
-	case DirRight:
-		return GridCoord{X: c.X - 1, Y: c.Y}
-	case DirDown:
-		return GridCoord{X: c.X, Y: c.Y - 1}
-	case DirLeft:
-		return GridCoord{X: c.X + 1, Y: c.Y}
-	case DirUp:
-		return GridCoord{X: c.X, Y: c.Y + 1}
-	case DirDownRight:
-		return GridCoord{X: c.X - 1, Y: c.Y - 1}
-	case DirDownLeft:
-		return GridCoord{X: c.X + 1, Y: c.Y - 1}
-	case DirUpLeft:
-		return GridCoord{X: c.X + 1, Y: c.Y + 1}
-	case DirUpRight:
-		return GridCoord{X: c.X - 1, Y: c.Y + 1}
-	default:
-		return c
-	}
+	do := dirOffset[d]
+	return GridCoord{X: c.X - do.X, Y: c.Y - do.Y}
 }
 
 // Move translates the coordinate one step towards the direction.
@@ -398,26 +399,8 @@ func (c GridCoord) reversedMove(d Direction) GridCoord {
 //   - {2,2}.Move(DirDown) would give {2,3}
 //   - {2,2}.Move(DirDownRight) would give {3,3}
 func (c GridCoord) Move(d Direction) GridCoord {
-	switch d {
-	case DirRight:
-		return GridCoord{X: c.X + 1, Y: c.Y}
-	case DirDown:
-		return GridCoord{X: c.X, Y: c.Y + 1}
-	case DirLeft:
-		return GridCoord{X: c.X - 1, Y: c.Y}
-	case DirUp:
-		return GridCoord{X: c.X, Y: c.Y - 1}
-	case DirDownRight:
-		return GridCoord{X: c.X + 1, Y: c.Y + 1}
-	case DirDownLeft:
-		return GridCoord{X: c.X - 1, Y: c.Y + 1}
-	case DirUpLeft:
-		return GridCoord{X: c.X - 1, Y: c.Y - 1}
-	case DirUpRight:
-		return GridCoord{X: c.X + 1, Y: c.Y - 1}
-	default:
-		return c
-	}
+	do := dirOffset[d]
+	return GridCoord{X: c.X + do.X, Y: c.Y + do.Y}
 }
 
 // DistManhattan finds a Manhattan distance between the two coordinates.
@@ -443,63 +426,57 @@ func (c GridCoord) DistOctile(other GridCoord) int {
 type Direction int
 
 const (
-	DirRight Direction = iota
-	DirDown
-	DirLeft
+	DirUpLeft Direction = iota
 	DirUp
-	DirDownRight // diagonal: +X, +Y
-	DirDownLeft  // diagonal: -X, +Y
-	DirUpLeft    // diagonal: -X, -Y
-	DirUpRight   // diagonal: +X, -Y
-	DirNone      // A special sentinel value
+	DirUpRight
+	DirLeft
+	DirRight
+	DirDownLeft
+	DirDown
+	DirDownRight
+	DirNone // A special sentinel value
 )
+
+func (d Direction) String() string {
+	switch d {
+	case DirUpLeft:
+		return "UpLeft"
+	case DirUp:
+		return "Up"
+	case DirUpRight:
+		return "UpRight"
+	case DirLeft:
+		return "Left"
+	case DirRight:
+		return "Right"
+	case DirDownLeft:
+		return "DownLeft"
+	case DirDown:
+		return "Down"
+	case DirDownRight:
+		return "DownRight"
+	default:
+		return "None"
+	}
+}
+
+// dirOffset maps Direction to (dx, dy) offsets.
+var dirReverse = [...]Direction{
+	DirDownRight, // DirUpLeft=0
+	DirDown,      // DirUp=1
+	DirDownLeft,  // DirUpRight=2
+	DirRight,     // DirLeft=3
+	DirLeft,      // DirRight=4
+	DirUpRight,   // DirDownLeft=5
+	DirUp,        // DirDown=6
+	DirUpLeft,    // DirDownRight=7
+	DirNone,      // DirNone=8
+}
 
 // Reversed returns an opposite direction.
 // For instance, DirRight would become DirLeft.
 func (d Direction) Reversed() Direction {
-	switch d {
-	case DirRight:
-		return DirLeft
-	case DirDown:
-		return DirUp
-	case DirLeft:
-		return DirRight
-	case DirUp:
-		return DirDown
-	case DirDownRight:
-		return DirUpLeft
-	case DirDownLeft:
-		return DirUpRight
-	case DirUpLeft:
-		return DirDownRight
-	case DirUpRight:
-		return DirDownLeft
-	default:
-		return DirNone
-	}
-}
-
-func (d Direction) String() string {
-	switch d {
-	case DirRight:
-		return "Right"
-	case DirDown:
-		return "Down"
-	case DirLeft:
-		return "Left"
-	case DirUp:
-		return "Up"
-	case DirDownRight:
-		return "DownRight"
-	case DirDownLeft:
-		return "DownLeft"
-	case DirUpLeft:
-		return "UpLeft"
-	case DirUpRight:
-		return "UpRight"
-	default:
-		return "None"
-	}
+	return dirReverse[d]
 }
 
 type coordMap struct {
@@ -573,19 +550,22 @@ func (s *coordMap) packCoord(c GridCoord) uint {
 	return uint((c.Y * s.numCols) + c.X)
 }
 
+// pathDirMap stores per-cell direction data with generation-based reset.
+// Each entry packs generation (bits 4-31) and direction (bits 0-3) into a single uint32,
+// reducing memory and improving cache locality vs separate gen+dirs arrays.
 type pathDirMap struct {
-	dirs    []byte
-	gen     []uint32
-	current uint32
+	data    []uint32 // packed: (generation << 4) | direction
+	current uint32   // current generation; only lower 28 bits used
 	numRows int
 	numCols int
 }
 
+const pathDirMapMaxGen = (1 << 28) - 1
+
 func newPathDirMap(numCols, numRows int) *pathDirMap {
 	size := numRows * numCols
 	return &pathDirMap{
-		dirs:    make([]byte, size),
-		gen:     make([]uint32, size),
+		data:    make([]uint32, size),
 		current: 1,
 		numRows: numRows,
 		numCols: numCols,
@@ -597,28 +577,38 @@ func (m *pathDirMap) packCoord(c GridCoord) uint {
 }
 
 func (m *pathDirMap) Contains(k uint) bool {
-	if k < uint(len(m.gen)) {
-		return m.gen[k] == m.current
+	if k < uint(len(m.data)) {
+		return m.data[k]>>dirShift == m.current
 	}
 	return false
 }
 
 func (m *pathDirMap) Get(k uint) (Direction, bool) {
-	if k < uint(len(m.gen)) && m.gen[k] == m.current {
-		return Direction(m.dirs[k]), true
+	if k < uint(len(m.data)) {
+		v := m.data[k]
+		if v>>dirShift == m.current {
+			return Direction(v & dirMask), true
+		}
 	}
 	return DirNone, false
 }
 
 func (m *pathDirMap) Set(k uint, d Direction) {
-	if k < uint(len(m.gen)) {
-		m.gen[k] = m.current
-		m.dirs[k] = byte(d)
+	if k < uint(len(m.data)) {
+		m.data[k] = (m.current << dirShift) | uint32(d)
+	}
+}
+
+// setIfAbsent writes d at key k only if k is not already set in this generation.
+// Skips bounds check — caller must ensure k is in range.
+func (m *pathDirMap) setIfAbsent(k uint, d Direction) {
+	if m.data[k]>>dirShift != m.current {
+		m.data[k] = (m.current << dirShift) | uint32(d)
 	}
 }
 
 func (m *pathDirMap) Reset() {
-	if m.current == math.MaxUint32 {
+	if m.current >= pathDirMapMaxGen {
 		m.clear()
 	} else {
 		m.current++
@@ -628,8 +618,7 @@ func (m *pathDirMap) Reset() {
 //go:noinline - called on a cold path, therefore it should not be inlined.
 func (m *pathDirMap) clear() {
 	m.current = 1
-	clear(m.gen)
-	clear(m.dirs)
+	clear(m.data)
 }
 
 func intabs(x int) int {
@@ -640,9 +629,9 @@ func intabs(x int) int {
 }
 
 const (
-	dirShift uint16 = 4
-	dirCount uint16 = 8 / dirShift // 2 directions per byte
-	dirMask  byte   = 0b1111
+	dirShift = 4
+	dirCount = 8 / dirShift // 2 directions per byte
+	dirMask  = 0b1111
 )
 
 type neighborGrid struct {

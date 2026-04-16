@@ -194,6 +194,12 @@ func TestPartialFallbackNearGoal(t *testing.T) {
 				return pathing.NewGreedyBFS(pathing.GreedyBFSConfig{NumCols: cols, NumRows: rows})
 			},
 		},
+		{
+			name: "jps",
+			constructor: func(cols, rows uint) pathBuilder {
+				return pathing.NewJPS(pathing.JPSConfig{NumCols: cols, NumRows: rows})
+			},
+		},
 	}
 
 	offsets := []pathing.GridCoord{
