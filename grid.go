@@ -330,9 +330,10 @@ func (g *Grid) UnpackCoord(v uint32) GridCoord {
 const (
 	// gridPathBytes controls the max number of steps a GridPath can hold.
 	// Each byte stores 2 direction values (4 bits each), so the max path
-	// length is gridPathBytes*2. 512 bytes = 1024 steps, enough for a
-	// 512x512 grid in both 4-directional and 8-directional (diagonal) modes.
-	gridPathBytes  = 512
+	// length is gridPathBytes*2. 2048 bytes = 4096 steps, enough for a
+	// 2048x2048 grid in 4-directional mode or a 4096x4096 grid in
+	// 8-directional (diagonal, chebyshev) mode.
+	gridPathBytes  = 2048
 	gridPathMaxLen = gridPathBytes * 2
 
 	// gridMapSide is the default working-area size used when NumCols/NumRows
