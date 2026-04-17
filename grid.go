@@ -769,23 +769,22 @@ func (p *GridPath) get(i uint16) Direction {
 	return DirNone
 }
 
-func constructPath(from, to GridCoord, pathmap *pathDirMap) GridPath {
+func constructPath(from, to GridCoord, pathmap *pathDirMap) (path GridPath) {
 	// We walk from the finish point towards the start.
 	// The directions are pushed in that order and would lead
 	// to a reversed path, but since GridPath does its iteration
 	// in reversed order itself, we don't need to do any
 	// post-build reversal here.
-	var result GridPath
 	pos := to
 	for {
 		d, _ := pathmap.Get(pathmap.packCoord(pos))
 		if pos == from {
 			break
 		}
-		result.push(d)
+		path.push(d)
 		pos = pos.reversedMove(d)
 	}
-	return result
+	return path
 }
 
 // BuildPathResult is a BuildPath() method return value.

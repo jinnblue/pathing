@@ -21,20 +21,22 @@ type JPS struct {
 	frontier *minheap[jpsCoord]
 	// costmap tracks g-scores for jump points only (used for stale-entry detection).
 	costmap *coordMap
-	// pathmap stores the direction each cell was first reached from (write-once).
-	// Used by constructPath for path reconstruction.
-	pathmap *pathDirMap
+	// parentCoord stores the packed parent coordinate for each jump point.
+	// Used by jpsConstructPath for path reconstruction (replaces per-cell pathmap).
+	parentCoord *coordMap
 	// parentDir tracks the best-known parent direction for each jump point.
 	// Updated whenever a better cost is found. Used by identifySuccessors
-	// for neighbor pruning, separate from pathmap to avoid reconstruction cycles.
+	// for neighbor pruning AND by jpsConstructPath for reconstruction.
 	parentDir *pathDirMap
 	bitGrid   jpsBitGrid
 
 	// Fallback tracking: updated during jump scans for partial-path support.
-	fallbackCoord GridCoord
-	fallbackDist  int
-	fallbackCost  int
-	fallbackSet   bool
+	fallbackCoord  GridCoord
+	fallbackDist   int
+	fallbackCost   int
+	fallbackSet    bool
+	fallbackDir    Direction // direction from parent to fallback (non-JP only)
+	fallbackParent GridCoord // parent of fallback cell (non-JP only)
 }
 
 // JPSConfig is a NewJPS() function parameter.
@@ -178,11 +180,11 @@ func NewJPS(config JPSConfig) *JPS {
 	coordMapRows := int(config.NumRows)
 
 	return &JPS{
-		frontier:  newMinheap[jpsCoord](32),
-		pathmap:   newPathDirMap(coordMapCols, coordMapRows),
-		parentDir: newPathDirMap(coordMapCols, coordMapRows),
-		costmap:   newCoordMap(coordMapCols, coordMapRows),
-		bitGrid:   newJPSBitGrid(coordMapCols, coordMapRows),
+		frontier:    newMinheap[jpsCoord](32),
+		parentDir:   newPathDirMap(coordMapCols, coordMapRows),
+		parentCoord: newCoordMap(coordMapCols, coordMapRows),
+		costmap:     newCoordMap(coordMapCols, coordMapRows),
+		bitGrid:     newJPSBitGrid(coordMapCols, coordMapRows),
 	}
 }
 
@@ -199,10 +201,8 @@ func (jps *JPS) BuildPath(g *Grid, from, to GridCoord, l GridLayer) BuildPathRes
 	frontier := jps.frontier
 	frontier.Reset()
 
-	pathmap := jps.pathmap
-	pathmap.Reset()
-
 	jps.parentDir.Reset()
+	jps.parentCoord.Reset()
 
 	costmap := jps.costmap
 	costmap.Reset()
@@ -228,7 +228,7 @@ func (jps *JPS) BuildPath(g *Grid, from, to GridCoord, l GridLayer) BuildPathRes
 		}
 
 		if current.Coord == to {
-			result.Steps = constructPath(from, to, pathmap)
+			result.Steps = jpsConstructPath(from, to, jps.parentDir, jps.parentCoord)
 			result.Finish = to
 			result.Cost = int(current.Cost)
 			foundPath = true
@@ -240,8 +240,18 @@ func (jps *JPS) BuildPath(g *Grid, from, to GridCoord, l GridLayer) BuildPathRes
 	}
 
 	if !foundPath {
-		result.Steps = constructPath(from, jps.fallbackCoord, pathmap)
-		result.Finish = jps.fallbackCoord
+		fb := jps.fallbackCoord
+		// Materialize fallback parent chain if fallback is not already a JP.
+		if fb != from {
+			numCols := jps.parentCoord.numCols
+			pk := uint(fb.Y*numCols + fb.X)
+			if !jps.parentCoord.Contains(pk) {
+				jps.parentDir.Set(pk, jps.fallbackDir)
+				jps.parentCoord.Set(pk, uint32(jps.fallbackParent.Y*numCols+jps.fallbackParent.X))
+			}
+		}
+		result.Steps = jpsConstructPath(from, fb, jps.parentDir, jps.parentCoord)
+		result.Finish = fb
 		result.Cost = result.Steps.Len()
 		result.Partial = true
 	}
@@ -256,6 +266,20 @@ func (jps *JPS) updateFallback(pos GridCoord, cost int, to GridCoord) {
 		jps.fallbackDist = dist
 		jps.fallbackCost = cost
 		jps.fallbackSet = true
+	}
+}
+
+// updateFallbackChain updates fallback tracking for non-JP cells (scan segments,
+// diagonal intermediates). Stores parent chain info for partial-path reconstruction.
+func (jps *JPS) updateFallbackChain(pos GridCoord, cost int, to GridCoord, dir Direction, parent GridCoord) {
+	dist := chebyshev(pos.X, pos.Y, to.X, to.Y)
+	if !jps.fallbackSet || dist < jps.fallbackDist || (dist == jps.fallbackDist && cost < jps.fallbackCost) {
+		jps.fallbackCoord = pos
+		jps.fallbackDist = dist
+		jps.fallbackCost = cost
+		jps.fallbackSet = true
+		jps.fallbackDir = dir
+		jps.fallbackParent = parent
 	}
 }
 
@@ -282,35 +306,34 @@ func (jps *JPS) identifySuccessors(g *Grid, current, from GridCoord, currentCost
 			if g.GetCellCost(next, l) == 0 {
 				continue
 			}
-			jps.pathmap.setIfAbsent(jps.pathmap.packCoord(next), dir)
 			if next == to {
-				jps.pushJumpPoint(next, currentCost+1, to, dir)
+				jps.pushJumpPoint(next, currentCost+1, to, dir, current)
 				continue
 			}
-			jps.jumpDiagPrune(g, next, dir, to, l, currentCost+1)
+			jps.jumpDiagPrune(g, next, dir, to, l, currentCost+1, current)
 		} else {
-			jp := jps.jumpCardBit(g, current, dir, to, l, currentCost)
+			jp := jps.jumpCardBit(g, current, dir, to, l, currentCost, current)
 			if jp.X < 0 {
 				continue
 			}
 			jumpDist := intabs(jp.X-current.X) + intabs(jp.Y-current.Y)
-			jps.pushJumpPoint(jp, currentCost+jumpDist, to, dir)
+			jps.pushJumpPoint(jp, currentCost+jumpDist, to, dir, current)
 		}
 	}
 }
 
 // pushJumpPoint adds a jump point to the frontier if it improves the known cost.
-// Pathmap is NOT written here — callers (recordCardinalScan, identifySuccessors,
-// jumpDiagPrune) already write it before calling pushJumpPoint.
-func (jps *JPS) pushJumpPoint(jp GridCoord, newCost int, to GridCoord, dir Direction) {
+// Stores both parent direction (for pruning) and parent coordinate (for reconstruction).
+func (jps *JPS) pushJumpPoint(jp GridCoord, newCost int, to GridCoord, dir Direction, parent GridCoord) {
 	jpk := jps.costmap.packCoord(jp)
 	oldCost, exists := jps.costmap.Get(jpk)
 	if exists && uint32(newCost) >= oldCost {
 		return
 	}
 	jps.costmap.Set(jpk, uint32(newCost))
-	// Always update parentDir for correct pruning in identifySuccessors.
+	// Always update parentDir and parentCoord for correct pruning and reconstruction.
 	jps.parentDir.Set(jps.parentDir.packCoord(jp), dir)
+	jps.parentCoord.Set(jpk, uint32(parent.Y*jps.parentCoord.numCols+parent.X))
 	priority := newCost + chebyshev(jp.X, jp.Y, to.X, to.Y)
 	jps.frontier.Push(priority, jpsCoord{Coord: jp, Cost: int32(newCost)})
 }
@@ -318,25 +341,24 @@ func (jps *JPS) pushJumpPoint(jp GridCoord, newCost int, to GridCoord, dir Direc
 // jumpCardBit performs a cardinal jump using bitboard scanning.
 // It moves one step first, then scans using bit operations.
 // Returns the jump point, or {-1,-1} if none found.
-func (jps *JPS) jumpCardBit(g *Grid, pos GridCoord, dir Direction, to GridCoord, l GridLayer, baseCost int) GridCoord {
+func (jps *JPS) jumpCardBit(g *Grid, pos GridCoord, dir Direction, to GridCoord, l GridLayer, baseCost int, scanParent GridCoord) GridCoord {
 	next := pos.Move(dir)
 	if g.GetCellCost(next, l) == 0 {
 		return GridCoord{X: -1, Y: -1}
 	}
-	jps.pathmap.setIfAbsent(jps.pathmap.packCoord(next), dir)
 	if next == to {
 		return next
 	}
 
 	switch dir {
 	case DirRight:
-		return jps.jumpBitRight(g, next.X, next.Y, to, l, baseCost+1)
+		return jps.jumpBitRight(g, next.X, next.Y, to, l, baseCost+1, scanParent)
 	case DirLeft:
-		return jps.jumpBitLeft(g, next.X, next.Y, to, l, baseCost+1)
+		return jps.jumpBitLeft(g, next.X, next.Y, to, l, baseCost+1, scanParent)
 	case DirDown:
-		return jps.jumpBitDown(g, next.X, next.Y, to, l, baseCost+1)
+		return jps.jumpBitDown(g, next.X, next.Y, to, l, baseCost+1, scanParent)
 	case DirUp:
-		return jps.jumpBitUp(g, next.X, next.Y, to, l, baseCost+1)
+		return jps.jumpBitUp(g, next.X, next.Y, to, l, baseCost+1, scanParent)
 	}
 
 	return GridCoord{X: -1, Y: -1}
@@ -347,7 +369,7 @@ func (jps *JPS) jumpCardBit(g *Grid, pos GridCoord, dir Direction, to GridCoord,
 // Keep their logic synchronized when making changes.
 //
 // jumpBitRight scans rightward from (x,y) using row bitboards.
-func (jps *JPS) jumpBitRight(g *Grid, x, y int, to GridCoord, l GridLayer, cost int) GridCoord {
+func (jps *JPS) jumpBitRight(g *Grid, x, y int, to GridCoord, l GridLayer, cost int, scanParent GridCoord) GridCoord {
 	bg := &jps.bitGrid
 	bg.ensureRow(g, y, l)
 	hasUp := y > 0
@@ -435,21 +457,21 @@ func (jps *JPS) jumpBitRight(g *Grid, x, y int, to GridCoord, l GridLayer, cost 
 			resultX := w*64 + minDist
 			if minType == scanWall {
 				if resultX-1 >= x {
-					jps.recordCardinalScan(resultX-1, x, y, DirRight, cost, to)
+					jps.updateScanFallback(resultX-1, x, y, DirRight, cost, to, scanParent)
 				}
 				return GridCoord{X: -1, Y: -1}
 			}
-			jps.recordCardinalScan(resultX, x, y, DirRight, cost, to)
+			jps.updateScanFallback(resultX, x, y, DirRight, cost, to, scanParent)
 			return GridCoord{X: resultX, Y: y}
 		}
 
 		// No event in this word — continue without per-word pathmap writes.
-		// The final recordCardinalScan (wall/jump/goal) covers the full range.
+		// The final updateScanFallback (wall/jump/goal) covers the full range.
 	}
 	// Fell off grid edge.
 	endX := bg.numCols - 1
 	if endX >= x {
-		jps.recordCardinalScan(endX, x, y, DirRight, cost, to)
+		jps.updateScanFallback(endX, x, y, DirRight, cost, to, scanParent)
 	}
 	return GridCoord{X: -1, Y: -1}
 }
@@ -457,7 +479,7 @@ func (jps *JPS) jumpBitRight(g *Grid, x, y int, to GridCoord, l GridLayer, cost 
 // Note: intentionally duplicated for performance. Keep synchronized with other jumpBit* functions.
 //
 // jumpBitLeft scans leftward from (x,y) using row bitboards.
-func (jps *JPS) jumpBitLeft(g *Grid, x, y int, to GridCoord, l GridLayer, cost int) GridCoord {
+func (jps *JPS) jumpBitLeft(g *Grid, x, y int, to GridCoord, l GridLayer, cost int, scanParent GridCoord) GridCoord {
 	bg := &jps.bitGrid
 	bg.ensureRow(g, y, l)
 	hasUp := y > 0
@@ -541,11 +563,11 @@ func (jps *JPS) jumpBitLeft(g *Grid, x, y int, to GridCoord, l GridLayer, cost i
 			resultX := w*64 + (63 - minDist)
 			if minType == scanWall {
 				if resultX+1 <= x {
-					jps.recordCardinalScan(resultX+1, x, y, DirLeft, cost, to)
+					jps.updateScanFallback(resultX+1, x, y, DirLeft, cost, to, scanParent)
 				}
 				return GridCoord{X: -1, Y: -1}
 			}
-			jps.recordCardinalScan(resultX, x, y, DirLeft, cost, to)
+			jps.updateScanFallback(resultX, x, y, DirLeft, cost, to, scanParent)
 			return GridCoord{X: resultX, Y: y}
 		}
 
@@ -553,7 +575,7 @@ func (jps *JPS) jumpBitLeft(g *Grid, x, y int, to GridCoord, l GridLayer, cost i
 	}
 	// Fell off grid edge.
 	if x >= 0 {
-		jps.recordCardinalScan(0, x, y, DirLeft, cost, to)
+		jps.updateScanFallback(0, x, y, DirLeft, cost, to, scanParent)
 	}
 	return GridCoord{X: -1, Y: -1}
 }
@@ -561,7 +583,7 @@ func (jps *JPS) jumpBitLeft(g *Grid, x, y int, to GridCoord, l GridLayer, cost i
 // Note: intentionally duplicated for performance. Keep synchronized with other jumpBit* functions.
 //
 // jumpBitDown scans downward from (x,y) using column bitboards.
-func (jps *JPS) jumpBitDown(g *Grid, x, y int, to GridCoord, l GridLayer, cost int) GridCoord {
+func (jps *JPS) jumpBitDown(g *Grid, x, y int, to GridCoord, l GridLayer, cost int, scanParent GridCoord) GridCoord {
 	bg := &jps.bitGrid
 	bg.ensureCol(g, x, l)
 	hasLeft := x > 0
@@ -644,11 +666,11 @@ func (jps *JPS) jumpBitDown(g *Grid, x, y int, to GridCoord, l GridLayer, cost i
 			resultY := w*64 + minDist
 			if minType == scanWall {
 				if resultY-1 >= y {
-					jps.recordCardinalScan(resultY-1, y, x, DirDown, cost, to)
+					jps.updateScanFallback(resultY-1, y, x, DirDown, cost, to, scanParent)
 				}
 				return GridCoord{X: -1, Y: -1}
 			}
-			jps.recordCardinalScan(resultY, y, x, DirDown, cost, to)
+			jps.updateScanFallback(resultY, y, x, DirDown, cost, to, scanParent)
 			return GridCoord{X: x, Y: resultY}
 		}
 
@@ -657,7 +679,7 @@ func (jps *JPS) jumpBitDown(g *Grid, x, y int, to GridCoord, l GridLayer, cost i
 	// Fell off grid edge.
 	endY := bg.numRows - 1
 	if endY >= y {
-		jps.recordCardinalScan(endY, y, x, DirDown, cost, to)
+		jps.updateScanFallback(endY, y, x, DirDown, cost, to, scanParent)
 	}
 	return GridCoord{X: -1, Y: -1}
 }
@@ -665,7 +687,7 @@ func (jps *JPS) jumpBitDown(g *Grid, x, y int, to GridCoord, l GridLayer, cost i
 // Note: intentionally duplicated for performance. Keep synchronized with other jumpBit* functions.
 //
 // jumpBitUp scans upward from (x,y) using column bitboards.
-func (jps *JPS) jumpBitUp(g *Grid, x, y int, to GridCoord, l GridLayer, cost int) GridCoord {
+func (jps *JPS) jumpBitUp(g *Grid, x, y int, to GridCoord, l GridLayer, cost int, scanParent GridCoord) GridCoord {
 	bg := &jps.bitGrid
 	bg.ensureCol(g, x, l)
 	hasLeft := x > 0
@@ -747,11 +769,11 @@ func (jps *JPS) jumpBitUp(g *Grid, x, y int, to GridCoord, l GridLayer, cost int
 			resultY := w*64 + (63 - minDist)
 			if minType == scanWall {
 				if resultY+1 <= y {
-					jps.recordCardinalScan(resultY+1, y, x, DirUp, cost, to)
+					jps.updateScanFallback(resultY+1, y, x, DirUp, cost, to, scanParent)
 				}
 				return GridCoord{X: -1, Y: -1}
 			}
-			jps.recordCardinalScan(resultY, y, x, DirUp, cost, to)
+			jps.updateScanFallback(resultY, y, x, DirUp, cost, to, scanParent)
 			return GridCoord{X: x, Y: resultY}
 		}
 
@@ -759,66 +781,30 @@ func (jps *JPS) jumpBitUp(g *Grid, x, y int, to GridCoord, l GridLayer, cost int
 	}
 	// Fell off grid edge.
 	if y >= 0 {
-		jps.recordCardinalScan(0, y, x, DirUp, cost, to)
+		jps.updateScanFallback(0, y, x, DirUp, cost, to, scanParent)
 	}
 	return GridCoord{X: -1, Y: -1}
 }
 
-// recordCardinalScan records pathmap for all cells between start and end
-// (inclusive) along a cardinal direction, and updates fallback using the
-// analytically closest cell on the segment rather than per-cell chebyshev.
+// updateScanFallback computes the analytically closest cell to the goal on a
+// cardinal scan segment and updates fallback if it's closer than the current best.
+// O(1) per scan — replaces per-cell pathmap writes from recordCardinalScan.
 //
 // For horizontal scans fixedAxis is Y; for vertical scans fixedAxis is X.
-func (jps *JPS) recordCardinalScan(scanEnd, scanStart, fixedAxis int, dir Direction, startCost int, to GridCoord) {
-	pm := jps.pathmap
-	numCols := pm.numCols
-	gen := pm.current
-	genDir := (gen << dirShift) | uint32(dir)
-
+func (jps *JPS) updateScanFallback(scanEnd, scanStart, fixedAxis int, dir Direction, startCost int, to GridCoord, scanParent GridCoord) {
 	switch dir {
 	case DirRight:
-		k := uint(fixedAxis*numCols + scanStart)
-		for cx := scanStart; cx <= scanEnd; cx++ {
-			if pm.data[k]>>dirShift != gen {
-				pm.data[k] = genDir
-			}
-			k++
-		}
 		bestX := clamp(to.X, scanStart, scanEnd)
-		jps.updateFallback(GridCoord{X: bestX, Y: fixedAxis}, startCost+(bestX-scanStart), to)
-
+		jps.updateFallbackChain(GridCoord{X: bestX, Y: fixedAxis}, startCost+(bestX-scanStart), to, dir, scanParent)
 	case DirLeft:
-		k := uint(fixedAxis*numCols + scanStart)
-		for cx := scanStart; cx >= scanEnd; cx-- {
-			if pm.data[k]>>dirShift != gen {
-				pm.data[k] = genDir
-			}
-			k--
-		}
 		bestX := clamp(to.X, scanEnd, scanStart)
-		jps.updateFallback(GridCoord{X: bestX, Y: fixedAxis}, startCost+(scanStart-bestX), to)
-
+		jps.updateFallbackChain(GridCoord{X: bestX, Y: fixedAxis}, startCost+(scanStart-bestX), to, dir, scanParent)
 	case DirDown:
-		k := uint(scanStart*numCols + fixedAxis)
-		for cy := scanStart; cy <= scanEnd; cy++ {
-			if pm.data[k]>>dirShift != gen {
-				pm.data[k] = genDir
-			}
-			k += uint(numCols)
-		}
 		bestY := clamp(to.Y, scanStart, scanEnd)
-		jps.updateFallback(GridCoord{X: fixedAxis, Y: bestY}, startCost+(bestY-scanStart), to)
-
+		jps.updateFallbackChain(GridCoord{X: fixedAxis, Y: bestY}, startCost+(bestY-scanStart), to, dir, scanParent)
 	case DirUp:
-		k := uint(scanStart*numCols + fixedAxis)
-		for cy := scanStart; cy >= scanEnd; cy-- {
-			if pm.data[k]>>dirShift != gen {
-				pm.data[k] = genDir
-			}
-			k -= uint(numCols)
-		}
 		bestY := clamp(to.Y, scanEnd, scanStart)
-		jps.updateFallback(GridCoord{X: fixedAxis, Y: bestY}, startCost+(scanStart-bestY), to)
+		jps.updateFallbackChain(GridCoord{X: fixedAxis, Y: bestY}, startCost+(scanStart-bestY), to, dir, scanParent)
 	}
 }
 
@@ -832,13 +818,35 @@ func clamp(v, lo, hi int) int {
 	return v
 }
 
+// jpsConstructPath reconstructs a path by walking the jump point parent chain.
+// Each JP stores its parent direction and parent coordinate.
+// The path between any JP and its parent is a straight line (cardinal or diagonal),
+// so we emit chebyshev-distance steps of the stored direction for each segment.
+func jpsConstructPath(from, to GridCoord, parentDir *pathDirMap, parentCoord *coordMap) (path GridPath) {
+	numCols := parentCoord.numCols
+	pos := to
+	for pos != from {
+		pk := uint(pos.Y*numCols + pos.X)
+		dir, _ := parentDir.Get(pk)
+		ppacked, _ := parentCoord.Get(pk)
+		parent := GridCoord{X: int(ppacked) % numCols, Y: int(ppacked) / numCols}
+		dist := chebyshev(pos.X, pos.Y, parent.X, parent.Y)
+		for i := 0; i < dist; i++ {
+			path.push(dir)
+		}
+		pos = parent
+	}
+	return path
+}
+
 // jumpDiagPrune scans along a diagonal direction with intermediate jump point pruning.
 // Instead of returning intermediate diagonal jump points, it directly pushes
 // cardinal sub-jump points to the frontier (reducing heap operations).
 //
 // Uses precomputed offsets and direct getCellCost to avoid GridCoord construction
 // and Move table lookups in the hot loop.
-func (jps *JPS) jumpDiagPrune(g *Grid, pos GridCoord, dir Direction, to GridCoord, l GridLayer, cost int) {
+// origin is the JP that initiated this diagonal scan (for parent tracking).
+func (jps *JPS) jumpDiagPrune(g *Grid, pos GridCoord, dir Direction, to GridCoord, l GridLayer, cost int, origin GridCoord) {
 	perps := diagonalPerps[dir]
 	d1, d2 := perps[0], perps[1]
 	off := &diagOffsetsTable[dir]
@@ -847,8 +855,7 @@ func (jps *JPS) jumpDiagPrune(g *Grid, pos GridCoord, dir Direction, to GridCoor
 	x, y := pos.X, pos.Y
 
 	for {
-		curr := GridCoord{X: x, Y: y}
-		jps.updateFallback(curr, cost, to)
+		jps.updateFallbackChain(pos, cost, to, dir, origin)
 
 		// Inlined forced-neighbor detection: check if perpendicular neighbor
 		// is blocked while the corresponding diagonal is passable.
@@ -867,22 +874,30 @@ func (jps *JPS) jumpDiagPrune(g *Grid, pos GridCoord, dir Direction, to GridCoor
 		}
 
 		if forced {
-			jps.pushJumpPoint(curr, cost, to, dir)
+			jps.pushJumpPoint(pos, cost, to, dir, origin)
 			return
 		}
 
+		// Write parentCoord for this diagonal intermediate (setIfAbsent)
+		// so cardinal sub-scan fallback chains can trace back through it.
+		pk := uint(y*int(numCols) + x)
+		if !jps.parentCoord.Contains(pk) {
+			jps.parentCoord.Set(pk, uint32(origin.Y*int(numCols)+origin.X))
+			jps.parentDir.Set(pk, dir)
+		}
+
 		// Cardinal sub-jumps: push sub-jump points directly (pruning optimization).
-		jp1 := jps.jumpCardBit(g, curr, d1, to, l, cost)
-		jp2 := jps.jumpCardBit(g, curr, d2, to, l, cost)
+		jp1 := jps.jumpCardBit(g, pos, d1, to, l, cost, pos)
+		jp2 := jps.jumpCardBit(g, pos, d2, to, l, cost, pos)
 		if jp1.X >= 0 || jp2.X >= 0 {
 			// Found cardinal sub-jump(s). Push them and the current diagonal
 			// position (needed as waypoint for path reconstruction).
-			jps.pushJumpPoint(curr, cost, to, dir)
+			jps.pushJumpPoint(pos, cost, to, dir, origin)
 			if jp1.X >= 0 {
-				jps.pushJumpPoint(jp1, cost+intabs(jp1.X-x)+intabs(jp1.Y-y), to, d1)
+				jps.pushJumpPoint(jp1, cost+intabs(jp1.X-x)+intabs(jp1.Y-y), to, d1, pos)
 			}
 			if jp2.X >= 0 {
-				jps.pushJumpPoint(jp2, cost+intabs(jp2.X-x)+intabs(jp2.Y-y), to, d2)
+				jps.pushJumpPoint(jp2, cost+intabs(jp2.X-x)+intabs(jp2.Y-y), to, d2, pos)
 			}
 			return
 		}
@@ -894,9 +909,9 @@ func (jps *JPS) jumpDiagPrune(g *Grid, pos GridCoord, dir Direction, to GridCoor
 		}
 		x, y = nx, ny
 		cost++
-		jps.pathmap.setIfAbsent(jps.pathmap.packCoord(GridCoord{X: x, Y: y}), dir)
-		if x == to.X && y == to.Y {
-			jps.pushJumpPoint(GridCoord{X: x, Y: y}, cost, to, dir)
+		pos = GridCoord{X: x, Y: y}
+		if pos == to {
+			jps.pushJumpPoint(pos, cost, to, dir, origin)
 			return
 		}
 	}
