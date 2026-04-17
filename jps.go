@@ -835,43 +835,68 @@ func clamp(v, lo, hi int) int {
 // jumpDiagPrune scans along a diagonal direction with intermediate jump point pruning.
 // Instead of returning intermediate diagonal jump points, it directly pushes
 // cardinal sub-jump points to the frontier (reducing heap operations).
+//
+// Uses precomputed offsets and direct getCellCost to avoid GridCoord construction
+// and Move table lookups in the hot loop.
 func (jps *JPS) jumpDiagPrune(g *Grid, pos GridCoord, dir Direction, to GridCoord, l GridLayer, cost int) {
 	perps := diagonalPerps[dir]
 	d1, d2 := perps[0], perps[1]
-	for {
-		jps.updateFallback(pos, cost, to)
+	off := &diagOffsetsTable[dir]
+	numCols := g.numCols
+	numRows := g.numRows
+	x, y := pos.X, pos.Y
 
-		if hasDiagonalForced(g, pos, dir, l) {
-			// Real jump point with its own forced neighbors.
-			jps.pushJumpPoint(pos, cost, to, dir)
+	for {
+		curr := GridCoord{X: x, Y: y}
+		jps.updateFallback(curr, cost, to)
+
+		// Inlined forced-neighbor detection: check if perpendicular neighbor
+		// is blocked while the corresponding diagonal is passable.
+		forced := false
+		if bx, by := uint(x+off.b1x), uint(y+off.b1y); bx >= numCols || by >= numRows || g.getCellCost(bx, by, l) == 0 {
+			if fx, fy := uint(x+off.f1x), uint(y+off.f1y); fx < numCols && fy < numRows && g.getCellCost(fx, fy, l) != 0 {
+				forced = true
+			}
+		}
+		if !forced {
+			if bx, by := uint(x+off.b2x), uint(y+off.b2y); bx >= numCols || by >= numRows || g.getCellCost(bx, by, l) == 0 {
+				if fx, fy := uint(x+off.f2x), uint(y+off.f2y); fx < numCols && fy < numRows && g.getCellCost(fx, fy, l) != 0 {
+					forced = true
+				}
+			}
+		}
+
+		if forced {
+			jps.pushJumpPoint(curr, cost, to, dir)
 			return
 		}
 
 		// Cardinal sub-jumps: push sub-jump points directly (pruning optimization).
-		jp1 := jps.jumpCardBit(g, pos, d1, to, l, cost)
-		jp2 := jps.jumpCardBit(g, pos, d2, to, l, cost)
+		jp1 := jps.jumpCardBit(g, curr, d1, to, l, cost)
+		jp2 := jps.jumpCardBit(g, curr, d2, to, l, cost)
 		if jp1.X >= 0 || jp2.X >= 0 {
 			// Found cardinal sub-jump(s). Push them and the current diagonal
 			// position (needed as waypoint for path reconstruction).
-			jps.pushJumpPoint(pos, cost, to, dir)
+			jps.pushJumpPoint(curr, cost, to, dir)
 			if jp1.X >= 0 {
-				jps.pushJumpPoint(jp1, cost+intabs(jp1.X-pos.X)+intabs(jp1.Y-pos.Y), to, d1)
+				jps.pushJumpPoint(jp1, cost+intabs(jp1.X-x)+intabs(jp1.Y-y), to, d1)
 			}
 			if jp2.X >= 0 {
-				jps.pushJumpPoint(jp2, cost+intabs(jp2.X-pos.X)+intabs(jp2.Y-pos.Y), to, d2)
+				jps.pushJumpPoint(jp2, cost+intabs(jp2.X-x)+intabs(jp2.Y-y), to, d2)
 			}
 			return
 		}
 
-		next := pos.Move(dir)
-		if g.GetCellCost(next, l) == 0 {
+		// Step diagonally using precomputed offsets.
+		nx, ny := x+off.dx, y+off.dy
+		if uint(nx) >= numCols || uint(ny) >= numRows || g.getCellCost(uint(nx), uint(ny), l) == 0 {
 			return
 		}
-		pos = next
+		x, y = nx, ny
 		cost++
-		jps.pathmap.setIfAbsent(jps.pathmap.packCoord(pos), dir)
-		if pos == to {
-			jps.pushJumpPoint(pos, cost, to, dir)
+		jps.pathmap.setIfAbsent(jps.pathmap.packCoord(GridCoord{X: x, Y: y}), dir)
+		if x == to.X && y == to.Y {
+			jps.pushJumpPoint(GridCoord{X: x, Y: y}, cost, to, dir)
 			return
 		}
 	}
@@ -941,21 +966,27 @@ var diagForcedChecks = [...]diagForcedCheck{
 	{DirNone, DirNone, DirNone, DirNone},         // DirNone=8
 }
 
-// hasDiagonalForced checks if a position has forced neighbors
-// when approached from a diagonal direction.
-func hasDiagonalForced(g *Grid, pos GridCoord, dir Direction, l GridLayer) bool {
-	fc := &diagForcedChecks[dir]
-	if g.GetCellCost(pos.Move(fc.block1), l) == 0 {
-		if g.GetCellCost(pos.Move(fc.force1), l) != 0 {
-			return true
-		}
-	}
-	if g.GetCellCost(pos.Move(fc.block2), l) == 0 {
-		if g.GetCellCost(pos.Move(fc.force2), l) != 0 {
-			return true
-		}
-	}
-	return false
+// diagOffsets stores precomputed int offsets for diagonal jump scanning.
+// dx/dy is the diagonal step; b1/f1/b2/f2 are forced-neighbor check offsets.
+type diagOffsets struct {
+	dx, dy   int
+	b1x, b1y int
+	f1x, f1y int
+	b2x, b2y int
+	f2x, f2y int
+}
+
+// diagOffsetsTable is indexed by Direction. Non-diagonal entries are unused.
+var diagOffsetsTable = [...]diagOffsets{
+	{-1, -1, 1, 0, 1, -1, 0, 1, -1, 1}, // DirUpLeft=0
+	{},                                 // DirUp=1
+	{1, -1, -1, 0, -1, -1, 0, 1, 1, 1}, // DirUpRight=2
+	{},                                 // DirLeft=3
+	{},                                 // DirRight=4
+	{-1, 1, 1, 0, 1, 1, 0, -1, -1, -1}, // DirDownLeft=5
+	{},                                 // DirDown=6
+	{1, 1, -1, 0, -1, 1, 0, -1, 1, -1}, // DirDownRight=7
+	{},                                 // DirNone=8
 }
 
 func isDiagonalDir(d Direction) bool {
