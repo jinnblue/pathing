@@ -791,21 +791,46 @@ func (jps *JPS) jumpBitUp(g *Grid, x, y int, to GridCoord, l GridLayer, cost int
 // O(1) per scan — replaces per-cell pathmap writes from recordCardinalScan.
 //
 // For horizontal scans fixedAxis is Y; for vertical scans fixedAxis is X.
+//
+// Fast path: the chebyshev distance from any cell on this scan line to the goal
+// is at least the perpendicular-axis distance. If that already meets or exceeds
+// the current fallbackDist, no cell on the scan can improve the best, so skip
+// the full update.
 func (jps *JPS) updateScanFallback(scanEnd, scanStart, fixedAxis int, dir Direction, startCost int, to GridCoord, scanParent GridCoord) {
+	var bestX, bestY, cost int
 	switch dir {
 	case DirRight:
-		bestX := clamp(to.X, scanStart, scanEnd)
-		jps.updateFallbackChain(GridCoord{X: bestX, Y: fixedAxis}, startCost+(bestX-scanStart), to, dir, scanParent)
+		if jps.fallbackSet && intabs(fixedAxis-to.Y) >= jps.fallbackDist {
+			return
+		}
+		bestX = clamp(to.X, scanStart, scanEnd)
+		bestY = fixedAxis
+		cost = startCost + (bestX - scanStart)
 	case DirLeft:
-		bestX := clamp(to.X, scanEnd, scanStart)
-		jps.updateFallbackChain(GridCoord{X: bestX, Y: fixedAxis}, startCost+(scanStart-bestX), to, dir, scanParent)
+		if jps.fallbackSet && intabs(fixedAxis-to.Y) >= jps.fallbackDist {
+			return
+		}
+		bestX = clamp(to.X, scanEnd, scanStart)
+		bestY = fixedAxis
+		cost = startCost + (scanStart - bestX)
 	case DirDown:
-		bestY := clamp(to.Y, scanStart, scanEnd)
-		jps.updateFallbackChain(GridCoord{X: fixedAxis, Y: bestY}, startCost+(bestY-scanStart), to, dir, scanParent)
+		if jps.fallbackSet && intabs(fixedAxis-to.X) >= jps.fallbackDist {
+			return
+		}
+		bestX = fixedAxis
+		bestY = clamp(to.Y, scanStart, scanEnd)
+		cost = startCost + (bestY - scanStart)
 	case DirUp:
-		bestY := clamp(to.Y, scanEnd, scanStart)
-		jps.updateFallbackChain(GridCoord{X: fixedAxis, Y: bestY}, startCost+(scanStart-bestY), to, dir, scanParent)
+		if jps.fallbackSet && intabs(fixedAxis-to.X) >= jps.fallbackDist {
+			return
+		}
+		bestX = fixedAxis
+		bestY = clamp(to.Y, scanEnd, scanStart)
+		cost = startCost + (scanStart - bestY)
+	default:
+		return
 	}
+	jps.updateFallbackChain(GridCoord{X: bestX, Y: bestY}, cost, to, dir, scanParent)
 }
 
 func clamp(v, lo, hi int) int {
