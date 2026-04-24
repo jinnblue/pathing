@@ -65,12 +65,17 @@ func NewGreedyBFS(config GreedyBFSConfig) *GreedyBFS {
 // GreedyBFS treats 0 as "blocked" and any other value as "passable".
 // If you need a cost-based pathfinding, use AStar instead.
 func (bfs *GreedyBFS) BuildPath(g *Grid, from, to GridCoord, l GridLayer) BuildPathResult {
-	var result BuildPathResult
 	if from == to {
-		result.Finish = to
-		return result
+		return BuildPathResult{Finish: to}
 	}
+	if bfs.diagonal {
+		return bfs.buildPathDiagonal(g, from, to, l)
+	}
+	return bfs.buildPathCardinal(g, from, to, l)
+}
 
+// buildPathCardinal handles 4-directional bfs using dist manhattan with raw tile costs
+func (bfs *GreedyBFS) buildPathCardinal(g *Grid, from, to GridCoord, l GridLayer) (result BuildPathResult) {
 	frontier := bfs.pqueue
 	frontier.Reset()
 
@@ -80,16 +85,6 @@ func (bfs *GreedyBFS) BuildPath(g *Grid, from, to GridCoord, l GridLayer) BuildP
 
 	pathmap := bfs.pathmap
 	pathmap.Reset()
-
-	neighbors := neighborCardinal[:]
-	if bfs.diagonal {
-		neighbors = neighborDiagonal[:]
-	}
-
-	distFunc := GridCoord.DistManhattan
-	if bfs.diagonal {
-		distFunc = GridCoord.DistOctile
-	}
 
 	var fallbackCoord GridCoord
 	var fallbackDist, fallbackWeight int
@@ -112,7 +107,7 @@ func (bfs *GreedyBFS) BuildPath(g *Grid, from, to GridCoord, l GridLayer) BuildP
 			break
 		}
 
-		dist := distFunc(to, current.Coord)
+		dist := to.DistManhattan(current.Coord)
 		if !fallbackSet || dist < fallbackDist || (dist == fallbackDist && current.Weight < fallbackWeight) {
 			fallbackCoord = current.Coord
 			fallbackDist = dist
@@ -120,7 +115,7 @@ func (bfs *GreedyBFS) BuildPath(g *Grid, from, to GridCoord, l GridLayer) BuildP
 			fallbackSet = true
 		}
 
-		for _, nb := range neighbors {
+		for _, nb := range &neighborCardinal {
 			next := current.Coord.Add(nb.GridCoord)
 			if g.GetCellCost(next, l) == 0 {
 				continue
@@ -130,7 +125,86 @@ func (bfs *GreedyBFS) BuildPath(g *Grid, from, to GridCoord, l GridLayer) BuildP
 				continue
 			}
 			pathmap.Set(pathmapKey, nb.Direction)
-			nextDist := distFunc(to, next)
+			nextDist := to.DistManhattan(next)
+			nextWeighted := weightedGridCoord{
+				Coord: next,
+				// This is used to determine the out-of-scope coordinates.
+				// It's not a distance score; therefore, we're not using nextDist here.
+				Weight: current.Weight + 1,
+			}
+			if nextDist < dist {
+				hotFrontier = append(hotFrontier, nextWeighted)
+			} else {
+				frontier.Push(nextDist, nextWeighted)
+			}
+		}
+	}
+
+	if !foundPath {
+		result.Steps = constructPath(from, fallbackCoord, pathmap)
+		result.Finish = fallbackCoord
+		result.Cost = result.Steps.Len()
+		result.Partial = true
+	}
+
+	// In case if that slice was growing due to appends,
+	// save that extra capacity for later.
+	bfs.coordSlice = hotFrontier[:0]
+
+	return result
+}
+
+func (bfs *GreedyBFS) buildPathDiagonal(g *Grid, from, to GridCoord, l GridLayer) (result BuildPathResult) {
+	frontier := bfs.pqueue
+	frontier.Reset()
+
+	hotFrontier := bfs.coordSlice[:0]
+	hotFrontier = append(hotFrontier, weightedGridCoord{Coord: from})
+	hotIdx := 0
+
+	pathmap := bfs.pathmap
+	pathmap.Reset()
+
+	var fallbackCoord GridCoord
+	var fallbackDist, fallbackWeight int
+	fallbackSet := false
+	foundPath := false
+	for hotIdx < len(hotFrontier) || !frontier.IsEmpty() {
+		var current weightedGridCoord
+		if hotIdx < len(hotFrontier) {
+			current = hotFrontier[hotIdx]
+			hotIdx++
+		} else {
+			current = frontier.Pop()
+		}
+
+		if current.Coord == to {
+			result.Steps = constructPath(from, to, pathmap)
+			result.Finish = to
+			result.Cost = result.Steps.Len()
+			foundPath = true
+			break
+		}
+
+		dist := to.DistOctile(current.Coord)
+		if !fallbackSet || dist < fallbackDist || (dist == fallbackDist && current.Weight < fallbackWeight) {
+			fallbackCoord = current.Coord
+			fallbackDist = dist
+			fallbackWeight = current.Weight
+			fallbackSet = true
+		}
+
+		for _, nb := range &neighborDiagonal {
+			next := current.Coord.Add(nb.GridCoord)
+			if g.GetCellCost(next, l) == 0 {
+				continue
+			}
+			pathmapKey := pathmap.packCoord(next)
+			if pathmap.Contains(pathmapKey) {
+				continue
+			}
+			pathmap.Set(pathmapKey, nb.Direction)
+			nextDist := to.DistOctile(next)
 			nextWeighted := weightedGridCoord{
 				Coord: next,
 				// This is used to determine the out-of-scope coordinates.

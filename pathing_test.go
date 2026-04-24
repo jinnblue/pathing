@@ -20,8 +20,8 @@ func Example() {
 		CellHeight:  cellSize,
 	})
 
-	// We'll use Greedy BFS pathfinder.
-	bfs := pathing.NewGreedyBFS(pathing.GreedyBFSConfig{
+	// We'll use JPS pathfinder.
+	jps := pathing.NewJPS(pathing.JPSConfig{
 		NumCols: uint(g.NumCols()),
 		NumRows: uint(g.NumRows()),
 	})
@@ -81,7 +81,7 @@ func Example() {
 	finishPos := pathing.GridCoord{X: 3, Y: 1}
 
 	// Let's build a normal path first, for a non-flying unit.
-	p := bfs.BuildPath(g, startPos, finishPos, normalLayer)
+	p := jps.BuildPath(g, startPos, finishPos, normalLayer)
 
 	fmt.Println(p.Steps.String(), "- normal layer path")
 
@@ -91,7 +91,7 @@ func Example() {
 	}
 
 	// A flying unit can go in a straight line.
-	p = bfs.BuildPath(g, startPos, finishPos, flyingLayer)
+	p = jps.BuildPath(g, startPos, finishPos, flyingLayer)
 	fmt.Println(p.Steps.String(), "- flying layer path")
 
 	// A path building result has some extra information bits you might be interested in.
@@ -111,20 +111,18 @@ func Example() {
 	// m       m
 	// m m m m m
 
-	p = bfs.BuildPath(g, startPos, finishPos, flyingLayer)
+	p = jps.BuildPath(g, startPos, finishPos, flyingLayer)
 	fmt.Println(p.Steps.String(), "- after blocking a tile")
 
 	// Output:
-	// {Down,Down,Right,Right,Up,Up} - normal layer path
+	// {Down,DownRight,UpRight,Up} - normal layer path
 	// > step: Down
-	// > step: Down
-	// > step: Right
-	// > step: Right
-	// > step: Up
+	// > step: DownRight
+	// > step: UpRight
 	// > step: Up
 	// {Right,Right} - flying layer path
 	// {3 1} false
-	// {Up,Right,Right,Down} - after blocking a tile
+	// {DownRight,UpRight} - after blocking a tile
 }
 
 func TestGridMaps(t *testing.T) {

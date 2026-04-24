@@ -18,7 +18,7 @@ import (
 //
 // Bit Prune reference article https://cloud.tencent.com/developer/article/1748191.
 type JPS struct {
-	frontier *minheap[jpsCoord]
+	frontier *radixHeap[pathCoord]
 	// costmap tracks g-scores for jump points only (used for stale-entry detection).
 	costmap *coordMap
 	// parentCoord stores the packed parent coordinate for each jump point.
@@ -46,11 +46,6 @@ type JPSConfig struct {
 	// If you keep them at 0, the max amount of the working space will be allocated.
 	NumCols uint
 	NumRows uint
-}
-
-type jpsCoord struct {
-	Coord GridCoord
-	Cost  int32
 }
 
 // Scan event types for jumpBit* functions.
@@ -180,7 +175,7 @@ func NewJPS(config JPSConfig) *JPS {
 	coordMapRows := int(config.NumRows)
 
 	return &JPS{
-		frontier:    newMinheap[jpsCoord](32),
+		frontier:    newRadixHeap[pathCoord](),
 		parentDir:   newPathDirMap(coordMapCols, coordMapRows),
 		parentCoord: newCoordMap(coordMapCols, coordMapRows),
 		costmap:     newCoordMap(coordMapCols, coordMapRows),
@@ -209,7 +204,7 @@ func (jps *JPS) BuildPath(g *Grid, from, to GridCoord, l GridLayer) BuildPathRes
 
 	jps.bitGrid.resetForGrid(g, l)
 
-	frontier.Push(0, jpsCoord{Coord: from})
+	frontier.Push(0, pathCoord{Coord: from})
 	costmap.Set(costmap.packCoord(from), 0)
 
 	jps.fallbackSet = false
@@ -335,7 +330,7 @@ func (jps *JPS) pushJumpPoint(jp GridCoord, newCost int, to GridCoord, dir Direc
 	jps.parentDir.Set(jps.parentDir.packCoord(jp), dir)
 	jps.parentCoord.Set(jpk, uint32(parent.Y*jps.parentCoord.numCols+parent.X))
 	priority := newCost + chebyshev(jp.X, jp.Y, to.X, to.Y)
-	jps.frontier.Push(priority, jpsCoord{Coord: jp, Cost: int32(newCost)})
+	jps.frontier.Push(int32(priority), pathCoord{Coord: jp, Cost: int32(newCost)})
 }
 
 // jumpCardBit performs a cardinal jump using bitboard scanning.

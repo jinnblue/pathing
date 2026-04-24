@@ -36,7 +36,7 @@ func TestJPS(t *testing.T) {
 	l := pathing.MakeGridLayer(pathing.LayerCost{1, 0, 1, 1, 0, 0, 0, 0})
 	for _, tt := range astarTests {
 		t.Run(tt.name, func(t *testing.T) {
-			runJPSCrossCheck(t, tt.path, l)
+			runJPSCrossCheck(t, tt.name, tt.path, l)
 		})
 	}
 }
@@ -89,7 +89,7 @@ func TestJPSPartialFallback(t *testing.T) {
 	}
 }
 
-func runJPSCrossCheck(t *testing.T, grid []string, l pathing.GridLayer) {
+func runJPSCrossCheck(t *testing.T, name string, grid []string, l pathing.GridLayer) {
 	t.Helper()
 
 	offsets := []pathing.GridCoord{
@@ -101,7 +101,7 @@ func runJPSCrossCheck(t *testing.T, grid []string, l pathing.GridLayer) {
 	}
 
 	for _, offset := range offsets {
-		name := fmt.Sprintf("offset_%d_%d", offset.X, offset.Y)
+		name = fmt.Sprintf("%s_offset_%d_%d", name, offset.X, offset.Y)
 		t.Run(name, func(t *testing.T) {
 			m := padGrid(grid, offset)
 			parsed := testParseGrid(t, m)
@@ -184,50 +184,4 @@ func padGrid(m []string, offset pathing.GridCoord) []string {
 		result = append(result, string(prefix)+line)
 	}
 	return result
-}
-
-var jpsBenchTests = [][]string{
-	{
-		"..........",
-		"...A...B..",
-		"..........",
-	},
-	{
-		"A.........",
-		"..........",
-		"..........",
-		"..........",
-		".........B",
-	},
-	{
-		"..........x.....................",
-		"..........x.....................",
-		"..........x.....................",
-		"..........x.....................",
-		"................................",
-		"..............x.................",
-		"..............x.................",
-		"..A...........x.................",
-		"....x...........................",
-		"....x...........................",
-		"....x...........................",
-		"....x.......................B...",
-	},
-	{
-		"A                                                                  B",
-	},
-	{
-		".........x.....",
-		"xxxxxxxx.x.....",
-		"x......x.x.....",
-		"x..xxx.x.x.....",
-		"x....x.x.x.....",
-		"x..A.x...xx..xx",
-		"x....x.x.x...B.",
-		"xxxxxx.x.x.xxxx",
-		"x......x.x.....",
-		"xxxxxxxx.xxxx.x",
-		".........x.....",
-		"..........x....",
-	},
 }

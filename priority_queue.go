@@ -4,6 +4,105 @@ import (
 	"math/bits"
 )
 
+// pathCoord is the frontier element shared by AStar and JPS.
+type pathCoord struct {
+	Coord GridCoord
+	Cost  int32
+}
+
+// radixHeap is a generic monotone integer-priority queue.
+//
+// Correctness relies on the caller using a consistent heuristic so that
+// f-values popped from the frontier are non-decreasing.  Push'd priorities
+// must be >= the last-popped priority (or 0 before the first pop).
+//
+// Bucket i (i>=1) holds items whose priority XOR-differs from the current
+// min in bit i; bucket 0 holds items with priority == min.  When bucket 0
+// empties, we find the lowest non-empty bucket, update min to its smallest
+// priority, and redistribute that bucket.  Each item is redistributed at
+// most O(log maxPriority) times.  33 buckets suffice for any non-negative
+// int32 priority.
+const radixHeapBuckets = 33
+
+type radixHeapElem[T any] struct {
+	priority int32
+	value    T
+}
+
+type radixHeap[T any] struct {
+	buckets [radixHeapBuckets][]radixHeapElem[T]
+	min     int32
+	count   int
+}
+
+func newRadixHeap[T any]() *radixHeap[T] {
+	h := &radixHeap[T]{}
+	// Pre-size bucket 0 which sees the most churn (same-priority items).
+	h.buckets[0] = make([]radixHeapElem[T], 0, 32)
+	return h
+}
+
+func (h *radixHeap[T]) IsEmpty() bool { return h.count == 0 }
+
+func (h *radixHeap[T]) Reset() {
+	for i := range h.buckets {
+		if len(h.buckets[i]) > 0 {
+			h.buckets[i] = h.buckets[i][:0]
+		}
+	}
+	h.min = 0
+	h.count = 0
+}
+
+func (h *radixHeap[T]) bucketIndex(p int32) int {
+	if p == h.min {
+		return 0
+	}
+	return bits.Len32(uint32(p ^ h.min))
+}
+
+func (h *radixHeap[T]) Push(priority int32, v T) {
+	b := h.bucketIndex(priority)
+	h.buckets[b] = append(h.buckets[b], radixHeapElem[T]{priority: priority, value: v})
+	h.count++
+}
+
+func (h *radixHeap[T]) Pop() T {
+	// Fast path: bucket 0 holds items with priority == min.
+	if n := len(h.buckets[0]); n > 0 {
+		e := h.buckets[0][n-1]
+		h.buckets[0] = h.buckets[0][:n-1]
+		h.count--
+		return e.value
+	}
+	// Find lowest non-empty bucket.
+	i := 1
+	for len(h.buckets[i]) == 0 {
+		i++
+	}
+	// Locate new min priority in that bucket.
+	bucket := h.buckets[i]
+	newMin := bucket[0].priority
+	for j := 1; j < len(bucket); j++ {
+		if bucket[j].priority < newMin {
+			newMin = bucket[j].priority
+		}
+	}
+	h.min = newMin
+	// Redistribute bucket into lower buckets.
+	for _, e := range bucket {
+		b := h.bucketIndex(e.priority)
+		h.buckets[b] = append(h.buckets[b], e)
+	}
+	h.buckets[i] = bucket[:0]
+	// One or more items with priority == newMin are now in bucket 0.
+	n := len(h.buckets[0])
+	e := h.buckets[0][n-1]
+	h.buckets[0] = h.buckets[0][:n-1]
+	h.count--
+	return e.value
+}
+
 type minheap[T any] struct {
 	elems []minheapElem[T]
 }
